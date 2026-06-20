@@ -12,6 +12,22 @@ from js.module("three/webgpu") import {
   PointLight,
   WebGPURenderer,
 };
+from js.module("@dimforge/rapier3d-compat") import {
+  init,
+  World,
+  RigidBody,
+  Collider,
+  KinematicCharacterController
+};
+from js.module("@dimforge/rapier3d-compat") import * as Rapier;
+from js.module("./rapier_helpers.ts") import {
+  bodyX,
+  bodyY,
+  bodyZ,
+  controllerMoveX,
+  controllerMoveY,
+  controllerMoveZ
+};
 from js.global import { OffscreenCanvas, Uint8Array };
 from js.global import * as Global;
 from js.global("Object") import { assign };
@@ -35,6 +51,8 @@ from "./game.wm" import {
   cameraX,
   cameraY,
   cameraZ,
+  playerY,
+  placePlayer,
   shouldQuit,
   lookX,
   lookY,
@@ -42,7 +60,7 @@ from "./game.wm" import {
 };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
-from "./kinds.wm" import { panel, strut, hull, accent };
+from "./kinds.wm" import { panel, strut, hull, accent, water, earth, foliage };
 
 let lift = Monad.lift;
 
@@ -50,6 +68,7 @@ type AppError =
   | SdlError<Js.Error>
   | DenoError<Js.Error>
   | ThreeError<Js.Error>
+  | PhysicsError<Js.Error>
   | Message<String>;
 
 type PollStep = PollDone<Game> | PollAgain<Game>;
@@ -76,6 +95,7 @@ let okVoid = () => { Ok(void) };
 let denoResult = (value) => { value :> Result.mapErr(DenoError) };
 let sdlResult = (value) => { value :> Result.mapErr(SdlError) };
 let threeResult = (value) => { value :> Result.mapErr(ThreeError) };
+let physicsResult = (value) => { value :> Result.mapErr(PhysicsError) };
 let argumentResult = (value) => {
   value :> Result.mapErr((_) => { Message("invalid frame limit") })
 };
@@ -295,21 +315,114 @@ let animationContext = () => {
   }
 };
 
+let initPhysics = () => {
+  init() :> Task.map((_) => { void })
+};
+
+let createWorld = (gx: Number, gy: Number, gz: Number) => {
+  let world: Result<World, Js.Error> = World.new(JSON{ x: gx, y: gy, z: gz });
+  world
+};
+
+let addStaticBox = (world: World, cx: Number, cy: Number, cz: Number, hx: Number, hy: Number, hz: Number) => {
+  let place = lift Result (fixedDesc) => {
+    let attach = lift Result (bodyDesc) => {
+      let withBody = lift Result (body) => {
+        let collide = lift Result (colliderDesc) => {
+          world.createCollider(colliderDesc, body)
+        };
+        Rapier.ColliderDesc.cuboid(hx, hy, hz) :> collide
+      };
+      world.createRigidBody(bodyDesc) :> withBody
+    };
+    fixedDesc.setTranslation(cx, cy, cz) :> attach
+  };
+  Rapier.RigidBodyDesc.fixed() :> place
+};
+
+let createPlayer = (world: World, x: Number, y: Number, z: Number, halfHeight: Number, radius: Number) => {
+  let place = lift Result (kinematicDesc) => {
+    let attach = lift Result (bodyDesc) => {
+      let withBody = lift Result (body) => {
+        let collide = lift Result (colliderDesc) => {
+          world.createCollider(colliderDesc, body)
+            :> Result.map((collider) => { (body, collider) })
+        };
+        Rapier.ColliderDesc.capsule(halfHeight, radius) :> collide
+      };
+      world.createRigidBody(bodyDesc) :> withBody
+    };
+    kinematicDesc.setTranslation(x, y, z) :> attach
+  };
+  Rapier.RigidBodyDesc.kinematicPositionBased() :> place
+};
+
+let createController = (world: World, offset) => {
+  let configure = lift Result (controller) => {
+    Result|
+      controller.enableAutostep(0.6, 0.2, true),
+      controller.enableSnapToGround(0.3),
+      controller.setApplyImpulsesToDynamicBodies(true)
+    | :> Result.map((_) => { controller })
+  };
+  world.createCharacterController(offset) :> configure
+};
+
+let moveCharacter = (
+  world: World,
+  controller: KinematicCharacterController,
+  collider: Collider,
+  body: RigidBody,
+  dx: Number,
+  dy: Number,
+  dz: Number
+) => {
+  let read = lift Result (mx, my, mz, grounded, hx, hy, hz) => {
+    let stepped = lift Result (_) => {
+      Result|bodyX(body), bodyY(body), bodyZ(body)| :> Result.map((ax, ay, az) => {
+        (ax, ay, az, grounded)
+      })
+    };
+    body.setNextKinematicTranslation(JSON{
+      x: hx + mx,
+      y: hy + my,
+      z: hz + mz
+    })
+      :> Result.andThen((_) => { world.step() })
+      :> stepped
+  };
+  controller.computeColliderMovement(collider, JSON{ x: dx, y: dy, z: dz })
+    :> Result.andThen((_) => {
+      read(Result|
+        controllerMoveX(controller),
+        controllerMoveY(controller),
+        controllerMoveZ(controller),
+        controller.computedGrounded(),
+        bodyX(body),
+        bodyY(body),
+        bodyZ(body)
+      |)
+    })
+};
+
 -- Render one shadow-casting box mesh per solid into `parent` (a Group per level
--- instance). The same lists drive collision in game.wm, so the visible geometry
--- and the surfaces the player bumps into can never drift apart. `materials` is
--- the palette (wall, leg, hull, crate) and each solid's `kind` tag selects one.
+-- instance). The same level lists feed Rapier static colliders, except visual
+-- water surfaces are skipped by physics. `materials` is the palette and each
+-- solid's `kind` tag selects one.
 let rec addSolids = (parent, materials, boxes) => {
   match(boxes) {
     [] => { Ok(void) },
     [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), Var(kind)), ..Var(rest)] => {
-      let (panelMat, strutMat, hullMat, crateMat, accentMat) = materials;
+      let (panelMat, strutMat, hullMat, crateMat, accentMat, waterMat, earthMat, foliageMat) = materials;
       let material =
         match(kind) {
           panel => { panelMat },
           strut => { strutMat },
           hull => { hullMat },
           accent => { accentMat },
+          water => { waterMat },
+          earth => { earthMat },
+          foliage => { foliageMat },
           _ => { crateMat }
         };
       let place = lift Result (mesh) => {
@@ -326,6 +439,52 @@ let rec addSolids = (parent, materials, boxes) => {
       BoxGeometry.new(2 * hx, 2 * hy, 2 * hz) :> threeResult :> build
     }
   }
+};
+
+let rec addPhysicsSolids = (world, ox, oy, oz, boxes) => {
+  match(boxes) {
+    [] => { Ok(void) },
+    [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), Var(kind)), ..Var(rest)] => {
+      if (kind == water) {
+        addPhysicsSolids(world, ox, oy, oz, rest)
+      } else {
+        addStaticBox(world, ox + cx, oy + cy, oz + cz, hx, hy, hz)
+          :> physicsResult
+          :> Result.andThen((_) => { addPhysicsSolids(world, ox, oy, oz, rest) })
+      }
+    }
+  }
+};
+
+let buildPhysics = () => {
+  let assemble = lift Result (world) => {
+    let (mpx, mpy, mpz, _mpyaw) = mechPose();
+    let staticWorld = Result|
+      addStaticBox(world, 0, 0 - 0.05, 0, 30, 0.05, 30) :> physicsResult,
+      addPhysicsSolids(world, 0, 0, 0, worldSolids()),
+      addPhysicsSolids(world, mpx, mpy, mpz, mechSolids())
+    | :> Result.map((_) => { void });
+    let dynamicWorld = lift Result (_) => {
+      let player = createPlayer(world, 0, 0.9, 4, 0.55, 0.35) :> physicsResult;
+      let controller = createController(world, 0.01) :> physicsResult;
+      let finish = lift Result (pair, control) => {
+        let (body, collider) = pair;
+        Ok((world, control, collider, body))
+      };
+
+      Result|player, controller| :> finish
+    };
+
+    staticWorld :> dynamicWorld
+  };
+
+  createWorld(0, 0 - 22, 0) :> physicsResult :> assemble
+};
+
+let startPhysics = () => {
+  initPhysics()
+    :> Task.mapErr(PhysicsError)
+    :> Task.andThen((_) => { buildPhysics() :> Task.fromResult })
 };
 
 let buildScene = (surface) => {
@@ -368,8 +527,8 @@ let buildScene = (surface) => {
     let (mpx, mpy, mpz, mpyaw) = mechPose();
     -- The mech group carries the whole mech in its own frame: setting its
     -- transform here parks it, and the same call each frame will later drive it.
-    let populate = lift Result (panelMat, strutMat, hullMat, crateMat, accentMat) => {
-      let palette = (panelMat, strutMat, hullMat, crateMat, accentMat);
+    let populate = lift Result (panelMat, strutMat, hullMat, crateMat, accentMat, waterMat, earthMat, foliageMat) => {
+      let palette = (panelMat, strutMat, hullMat, crateMat, accentMat, waterMat, earthMat, foliageMat);
 
       Result|
         scene.add(mechGroup) :> threeResult,
@@ -401,7 +560,10 @@ let buildScene = (surface) => {
       makeMaterial(3948616, 0.5, 0.5) :> threeResult,     -- strut: dark steel
       makeMaterial(7041145, 0.55, 0.35) :> threeResult,   -- hull: mid steel
       makeMaterial(9067051, 0.85, 0) :> threeResult,      -- crate: wood
-      makeMaterial(14059823, 0.4, 0.3) :> threeResult     -- accent: warm highlight
+      makeMaterial(14059823, 0.4, 0.3) :> threeResult,    -- accent: warm highlight
+      makeMaterial(3107055, 0.72, 0) :> threeResult,      -- water: cold pond surface
+      makeMaterial(5333284, 0.9, 0) :> threeResult,       -- earth: packed dirt
+      makeMaterial(2858525, 0.8, 0) :> threeResult        -- foliage: reeds and bait beds
     | :> populate
   };
   let initialize = lift Task (scene, camera, renderer) => {
@@ -496,6 +658,7 @@ let stepFrame = (
   scene,
   camera,
   renderer,
+  physics,
   game
 ) => {
   let advance = lift Result (inputGame, time) => {
@@ -503,14 +666,25 @@ let stepFrame = (
       Ok(FrameDone(inputGame))
     } else {
       let nextGame = stepGame(inputGame, time);
-      let finish = lift Result (_) => { Ok(FrameNext(nextGame)) };
+      let (world, controller, collider, body) = physics;
+      let dx = cameraX(nextGame) - cameraX(inputGame);
+      let dy = playerY(nextGame) - playerY(inputGame);
+      let dz = cameraZ(nextGame) - cameraZ(inputGame);
+      let applyPhysics = lift Result (px, py, pz, _grounded) => {
+        let physicsGame = placePlayer(nextGame, px, py - 0.9, pz);
+        let finish = lift Result (_) => { Ok(FrameNext(physicsGame)) };
 
-      Result|
-        camera.position.set(cameraX(nextGame), cameraY(nextGame), cameraZ(nextGame)),
-        camera.lookAt(lookX(nextGame), lookY(nextGame), lookZ(nextGame)),
-        renderer.render(scene, camera),
-        surface.present()
-      | :> threeResult :> finish
+        Result|
+          camera.position.set(cameraX(physicsGame), cameraY(physicsGame), cameraZ(physicsGame)),
+          camera.lookAt(lookX(physicsGame), lookY(physicsGame), lookZ(physicsGame)),
+          renderer.render(scene, camera),
+          surface.present()
+        | :> threeResult :> finish
+      };
+
+      moveCharacter(world, controller, collider, body, dx, dy, dz)
+        :> physicsResult
+        :> applyPhysics
     }
   };
 
@@ -528,16 +702,17 @@ let rec spinFrames = (
   scene,
   camera,
   renderer,
+  physics,
   game,
   limit
 ) => {
   match(limit) {
     Remaining(0) => { Ok(game) },
     _ => {
-      match(stepFrame(sdl, surface, eventPtr, eventView, scene, camera, renderer, game)) {
+      match(stepFrame(sdl, surface, eventPtr, eventView, scene, camera, renderer, physics, game)) {
         Ok(FrameDone(done)) => { Ok(done) },
         Ok(FrameNext(next)) => {
-          spinFrames(sdl, surface, eventPtr, eventView, scene, camera, renderer, next, nextFrameLimit(limit))
+          spinFrames(sdl, surface, eventPtr, eventView, scene, camera, renderer, physics, next, nextFrameLimit(limit))
         },
         Err(e) => { Err(e) }
       }
@@ -550,16 +725,19 @@ let runGame = () => {
     let (sdl, window, surface, eventPtr, eventView) = native;
     buildScene(surface) :> Task.map((handles) => { (native, handles, limit) })
   };
-  let play = lift Task (native, handles, limit) => {
+  let createPhysics = lift Task (native, handles, limit) => {
+    startPhysics() :> Task.map((physics) => { (native, handles, physics, limit) })
+  };
+  let play = lift Task (native, handles, physics, limit) => {
     let (sdl, window, surface, eventPtr, eventView) = native;
     let (scene, camera, renderer) = handles;
     let game = initialGame();
 
-    spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, renderer, game, limit)
+    spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, renderer, physics, game, limit)
       :> Task.fromResult
   };
 
-  Result|frameLimit(), startNative()| :> Task.fromResult :> createScene :> play
+  Result|frameLimit(), startNative()| :> Task.fromResult :> createScene :> createPhysics :> play
 };
 
 let main = () => {

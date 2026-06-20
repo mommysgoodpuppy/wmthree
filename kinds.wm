@@ -10,3 +10,6 @@ let strut = 2;   -- dark structural steel (legs, frame, exhaust)
 let hull = 3;    -- mid steel body masses
 let crate = 4;   -- world props (wood)
 let accent = 5;  -- bright accent (cockpit trim, head, crane)
+let water = 6;   -- pond and fishing water surfaces
+let earth = 7;   -- packed dirt, banks, and trail edges
+let foliage = 8; -- reeds, bait beds, and soft exterior vegetation

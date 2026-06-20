@@ -253,6 +253,21 @@ Directly threaded Three and Deno handles work. Before designing the final engine
 foreign handles inside larger Workman records should receive a focused regression test. This is no
 longer a demonstrated blocker, but the larger ownership shape has not yet been exercised here.
 
+### Rapier integration status
+
+Rapier now initializes during `main.wm` startup and a kinematic capsule is stepped each frame through
+`KinematicCharacterController`. Static Rapier cuboids are built from the same `worldSolids()` and
+`mechSolids()` lists that render the visible boxes, plus a broad ground slab.
+
+Two current boundaries are worth preserving as regression targets:
+
+- Importing a Workman module that itself imports JS can emit `await import(...)` inside a synchronous
+  generated module wrapper. For now, the entry module owns the runtime Rapier imports directly;
+  `physics.wm` remains a checked reference boundary.
+- Rapier's `Vector` is a TypeScript interface. Direct `computedMovement().x` / `body.translation().x`
+  projection does not currently resolve as a reflected JS field. `rapier_helpers.ts` is intentionally
+  narrow and only reads numeric vector components from typed Rapier handles.
+
 ### Imported record projection inside lifted callbacks
 
 A projection such as `inputGame.controls.quit` inside an unannotated `lift Result` callback was

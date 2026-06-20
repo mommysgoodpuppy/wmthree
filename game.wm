@@ -1,5 +1,5 @@
 from "./trig.wm" import { sin, cos };
-from "./space.wm" import { toLocal, toWorld };
+from "./space.wm" import { toLocal };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
 
@@ -165,65 +165,16 @@ let clamp = (value, low, high) => {
   if (value < low) { low } else { if (value > high) { high } else { value } }
 };
 
--- Collision. Solids are axis-aligned boxes (cx, cy, cz, hx, hy, hz, kind) and
--- live in level modules (levels/mech.wm in mech-local space, levels/world.wm in
--- world space). The resolvers below operate on a list of boxes in whatever frame
--- the list is expressed in; stepGame runs them once per frame. `yOff` is the
--- frame's vertical offset in the world (the mech pose's y, 0 for the world). A
--- box's vertical extent is unaffected by the frame's yaw, so comparing heights
--- with the world-space player is valid while the mech is parked level.
+-- Movement. The pure core owns input timing, look, jump intent, and a ground
+-- estimate for vertical motion. Rapier owns horizontal wall/obstacle response
+-- in main.wm from the same level solids used for rendering.
 let playerRadius = 0.35;
-let playerHeight = 1.8;   -- feet-to-head body span
 let eyeHeight = 1.4;      -- camera height above the feet
 let stepHeight = 0.55;    -- tallest ledge that is climbed rather than blocked
 let gravity = 22;
 let jumpSpeed = 6;
 
--- A box blocks horizontal movement only where it overlaps the player's UPPER
--- body. Anything whose top is within a step of the feet is steppable (handled by
--- ground support instead of blocking), and anything entirely overhead is walked
--- under.
-let bodyBlocks = (cy, hy, yOff, feetY) => {
-  let top = cy + hy + yOff;
-  let bot = cy - hy + yOff;
-  top > (feetY + stepHeight) && bot < (feetY + playerHeight)
-};
-
 let withinFoot = (cc, hc, p) => { p > (cc - hc - playerRadius) && p < (cc + hc + playerRadius) };
-
-let rec slideX = (boxes, oldX, tryX, atZ, feetY, yOff) => {
-  match(boxes) {
-    [] => { tryX },
-    [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), _), ..Var(rest)] => {
-      let blocked =
-        bodyBlocks(cy, hy, yOff, feetY) && withinFoot(cz, hz, atZ) && withinFoot(cx, hx, tryX);
-      let nextX =
-        if (blocked) {
-          if (oldX <= cx) { cx - hx - playerRadius } else { cx + hx + playerRadius }
-        } else {
-          tryX
-        };
-      slideX(rest, oldX, nextX, atZ, feetY, yOff)
-    }
-  }
-};
-
-let rec slideZ = (boxes, oldZ, tryZ, atX, feetY, yOff) => {
-  match(boxes) {
-    [] => { tryZ },
-    [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), _), ..Var(rest)] => {
-      let blocked =
-        bodyBlocks(cy, hy, yOff, feetY) && withinFoot(cx, hx, atX) && withinFoot(cz, hz, tryZ);
-      let nextZ =
-        if (blocked) {
-          if (oldZ <= cz) { cz - hz - playerRadius } else { cz + hz + playerRadius }
-        } else {
-          tryZ
-        };
-      slideZ(rest, oldZ, nextZ, atX, feetY, yOff)
-    }
-  }
-};
 
 -- Highest box-top under the player's footprint that is reachable as a floor
 -- (within a step of the current feet). `best` threads the running maximum so the
@@ -249,24 +200,14 @@ let stepGame = (game: Game, time: Number) => {
   let strafe = axis(game.controls.right, game.controls.left);
   let speed = 3.5;
   let feetY = game.y;
-  let desiredX = game.x + (sin(yaw) * forward + cos(yaw) * strafe) * speed * dt;
-  let desiredZ = game.z + ((0 - cos(yaw)) * forward + sin(yaw) * strafe) * speed * dt;
+  let x = game.x + (sin(yaw) * forward + cos(yaw) * strafe) * speed * dt;
+  let z = game.z + ((0 - cos(yaw)) * forward + sin(yaw) * strafe) * speed * dt;
   let m = game.mech;
   let mechBoxes = mechSolids();
   let worldBoxes = worldSolids();
-  -- Resolve horizontally against the mech in its own local frame first (correct
-  -- at any mech pose), then against the world in world space. Each pass slides
-  -- one axis so the player slides along walls instead of sticking on diagonals.
-  let (oldLx, _oldLy, oldLz) = toLocal(m.x, m.y, m.z, m.yaw, game.x, 0, game.z);
-  let (tryLx, _tryLy, tryLz) = toLocal(m.x, m.y, m.z, m.yaw, desiredX, 0, desiredZ);
-  let resLx = slideX(mechBoxes, oldLx, tryLx, oldLz, feetY, m.y);
-  let resLz = slideZ(mechBoxes, oldLz, tryLz, resLx, feetY, m.y);
-  let (mechWx, _mechWy, mechWz) = toWorld(m.x, m.y, m.z, m.yaw, resLx, 0, resLz);
-  let x = slideX(worldBoxes, game.x, mechWx, game.z, feetY, 0);
-  let z = slideZ(worldBoxes, game.z, mechWz, x, feetY, 0);
-  -- Vertical: ground support is the highest reachable surface under the resolved
-  -- footprint (world floor at y = 0 folded in via the starting `best`). Stepping
-  -- up onto low ledges and stairs happens here because they never block above.
+  -- Horizontal motion is now only intent. Rapier owns wall and obstacle
+  -- response at the FFI boundary, while the pure core keeps timing, look, jump,
+  -- and a ground estimate for vertical intent.
   let (footLx, _footLy, footLz) = toLocal(m.x, m.y, m.z, m.yaw, x, 0, z);
   let groundWorld = groundUnder(worldBoxes, x, z, feetY, 0, 0);
   let groundY = groundUnder(mechBoxes, footLx, footLz, feetY, m.y, groundWorld);
@@ -297,4 +238,20 @@ let lookZ = (game: Game) => { game.z - cos(game.yaw) * cos(game.pitch) };
 let cameraX = (game: Game) => { game.x };
 let cameraY = (game: Game) => { game.y + eyeHeight };
 let cameraZ = (game: Game) => { game.z };
+let playerY = (game: Game) => { game.y };
 let shouldQuit = (game: Game) => { game.controls.quit };
+
+let placePlayer = (game: Game, x: Number, y: Number, z: Number) => {
+  .{
+    x,
+    y,
+    z,
+    vy = game.vy,
+    yaw = game.yaw,
+    pitch = game.pitch,
+    frame = game.frame,
+    last = game.last,
+    controls = game.controls,
+    mech = game.mech
+  }
+};

@@ -1,15 +1,39 @@
 -- Project Bigger Fish — the exterior world, authored declaratively in WORLD
--- coordinates with the level library. For now the world holds a couple of
--- crates in the yard; terrain and outposts will grow here. `mechPose` is where
--- the mech is currently parked.
+-- coordinates with the level library. The first exterior work site is a small
+-- fishing pond with a dock, bait beds, and a few service crates. `mechPose` is
+-- where the mech is currently parked.
 
 from "../build.wm" import { Node, box, at, group, solids as assemble };
-from "../kinds.wm" import { crate };
+from "../kinds.wm" import { panel, crate, water, earth, foliage };
 
 let props = () => {
   group([
+    -- Yard clutter near the mech exit.
     at(2, 0.5, -2, box(1.0, 1.0, 1.0, crate)),
-    at(-1.5, 0.5, 0, box(1.0, 1.0, 1.0, crate))
+    at(-1.5, 0.5, 0, box(1.0, 1.0, 1.0, crate)),
+
+    -- Fishing pond work area, reachable on foot from the rear mech door.
+    at(8, 0.02, 8, box(9.5, 0.04, 7.0, water)),
+    at(8, 0.1, 3.8, box(10.5, 0.2, 0.7, earth)),
+    at(8, 0.1, 12.2, box(10.5, 0.2, 0.7, earth)),
+    at(2.9, 0.1, 8, box(0.7, 0.2, 7.0, earth)),
+    at(13.1, 0.1, 8, box(0.7, 0.2, 7.0, earth)),
+    at(8, 0.16, 4.7, box(2.2, 0.32, 3.4, crate)),
+    at(8, 0.42, 3.0, box(0.35, 0.84, 0.35, crate)),
+    at(6.7, 0.25, 2.1, box(1.0, 0.5, 0.8, crate)),
+    at(9.4, 0.25, 2.1, box(1.0, 0.5, 0.8, crate)),
+
+    -- A small bait growing patch and service marker.
+    at(12.3, 0.16, 2.0, box(2.2, 0.32, 1.1, earth)),
+    at(12.3, 0.45, 2.0, box(1.7, 0.5, 0.75, foliage)),
+    at(4.1, 0.6, 3.1, box(0.18, 1.2, 0.18, panel)),
+    at(4.1, 1.25, 3.1, box(0.8, 0.28, 0.12, panel)),
+
+    -- Reeds around the waterline to make the pond read from a distance.
+    at(3.7, 0.55, 6.0, box(0.28, 1.1, 0.28, foliage)),
+    at(3.5, 0.45, 10.4, box(0.24, 0.9, 0.24, foliage)),
+    at(12.4, 0.5, 6.2, box(0.24, 1.0, 0.24, foliage)),
+    at(12.6, 0.4, 10.1, box(0.24, 0.8, 0.24, foliage))
   ])
 };
 
