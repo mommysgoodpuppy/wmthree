@@ -1,0 +1,374 @@
+from js.module("three/webgpu") import {
+  Scene,
+  PerspectiveCamera,
+  BoxGeometry,
+  PlaneGeometry,
+  MeshBasicMaterial,
+  Mesh,
+  Color,
+  WebGPURenderer,
+};
+from js.global import { OffscreenCanvas, Uint8Array };
+from js.global import * as Global;
+from js.global("Object") import { assign };
+from js.global("Deno") import {
+  dlopen: _deep_,
+  UnsafePointerView,
+  UnsafeWindowSurface,
+};
+from js.global("Deno.UnsafePointer") import { of as pointerOf };
+from js.global("performance") import { now };
+
+type AppError =
+  | SdlError<Js.Error>
+  | DenoError<Js.Error>
+  | ThreeError<Js.Error>
+  | Message<String>;
+
+record Game = { x: Number, z: Number, yaw: Number, frame: Number, last: Number };
+record AnimationContext = {
+  requestAnimationFrame: (Js.Value) => Number,
+  cancelAnimationFrame: (Number) => Void
+};
+
+let width = 960;
+let height = 540;
+let sdlInitVideo = 32;
+let sdlWindowShown = 4;
+let sdlWindowResizable = 32;
+let sdlQuit = 256;
+let sdlKeydown = 768;
+let sdlKeyup = 769;
+let sdlWindowposCentered = 805240832;
+
+let okVoid = () => { Ok(void) };
+
+let expectSome = (label, value) => {
+  match(value) {
+    Some(v) => { Ok(v) },
+    None => { Err(Message(label)) }
+  }
+};
+
+let expectNonZero = (label, value) => {
+  if (value == 0) { Err(Message(label)) } else { Ok(value) }
+};
+
+let expectCodeZero = (label, value) => {
+  if (value == 0) { Ok(void) } else { Err(Message(label)) }
+};
+
+let windowTitle = () => {
+  Uint8Array.new(JSON[
+    87, 111, 114, 107, 109, 97, 110, 32,
+    84, 104, 114, 101, 101, 32,
+    87, 101, 98, 71, 80, 85, 32,
+    70, 80, 83, 0
+  ])
+};
+
+let loadSdl = () => {
+  dlopen("SDL2", JSON{
+    SDL_Init: JSON{ parameters: JSON["u32"], result: "i32" },
+    SDL_Quit: JSON{ parameters: JSON[], result: "void" },
+    SDL_CreateWindow: JSON{
+      parameters: JSON["buffer", "i32", "i32", "i32", "i32", "u32"],
+      result: "pointer"
+    },
+    SDL_DestroyWindow: JSON{ parameters: JSON["pointer"], result: "void" },
+    SDL_GetWindowWMInfo: JSON{ parameters: JSON["pointer", "pointer"], result: "i32" },
+    SDL_GetVersion: JSON{ parameters: JSON["pointer"], result: "void" },
+    SDL_PollEvent: JSON{ parameters: JSON["pointer"], result: "i32" },
+    SDL_Metal_CreateView: JSON{ parameters: JSON["pointer"], result: "pointer" }
+  }) :> Result.mapErr(SdlError)
+};
+
+let createWindow = (sdl) => {
+  match(windowTitle() :> Result.mapErr(DenoError)) {
+    Ok(title) => {
+      match(sdl.symbols.SDL_CreateWindow(
+        Some(title),
+        sdlWindowposCentered,
+        sdlWindowposCentered,
+        width,
+        height,
+        sdlWindowShown + sdlWindowResizable
+      )) {
+        Ok(raw) => { Ok(raw) },
+        Err(e) => { Err(SdlError(e)) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let pointerFromBuffer = (label, buffer) => {
+  match(pointerOf(buffer) :> Result.mapErr(DenoError)) {
+    Ok(ptr) => { expectSome(label, ptr) },
+    Err(e) => { Err(e) }
+  }
+};
+
+let pointerView = (ptr) => {
+  UnsafePointerView.new(ptr) :> Result.mapErr(DenoError)
+};
+
+let win32Surface = (window, infoPtr, view) => {
+  match(Result|
+    view.getPointer(8),
+    view.getPointer(24)
+  | :> Result.mapErr(DenoError)) {
+    Ok((Var(hwndOpt), Var(hinstOpt))) => {
+      match(Result|
+        expectSome("missing HWND", hwndOpt),
+        expectSome("missing HINSTANCE", hinstOpt)
+      |) {
+        Ok((Var(hwnd), Var(hinst))) => {
+          UnsafeWindowSurface.new(JSON{
+            system: "win32",
+            windowHandle: hwnd,
+            displayHandle: hinst,
+            width: width,
+            height: height
+          }) :> Result.mapErr(DenoError)
+        },
+        Err(e) => { Err(e) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let createSurface = (sdl, window) => {
+  match(Uint8Array.new(519) :> Result.mapErr(DenoError)) {
+    Ok(infoBuf) => {
+      match(pointerFromBuffer("SDL_SysWMInfo pointer was null", infoBuf)) {
+        Ok(infoPtr) => {
+          match(Result|
+            sdl.symbols.SDL_GetVersion(Some(infoPtr)) :> Result.mapErr(SdlError),
+            sdl.symbols.SDL_GetWindowWMInfo(window, Some(infoPtr)) :> Result.mapErr(SdlError),
+            pointerView(infoPtr)
+          |) {
+            Ok((_, _, Var(view))) => {
+              match(view.getUint32(4) :> Result.mapErr(DenoError)) {
+                Ok(1) => { win32Surface(window, infoPtr, view) },
+                Ok(_) => { Err(Message("expected SDL_SYSWM_WINDOWS")) },
+                Err(e) => { Err(e) }
+              }
+            },
+            Err(e) => { Err(e) }
+          }
+        },
+        Err(e) => { Err(e) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let createEventState = () => {
+  match(Uint8Array.new(56) :> Result.mapErr(DenoError)) {
+    Ok(eventBuf) => {
+      match(pointerFromBuffer("SDL_Event pointer was null", eventBuf)) {
+        Ok(eventPtr) => {
+          match(pointerView(eventPtr)) {
+            Ok(eventView) => { Ok((eventPtr, eventView)) },
+            Err(e) => { Err(e) }
+          }
+        },
+        Err(e) => { Err(e) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let initNative = () => {
+  match(loadSdl()) {
+    Ok(sdl) => {
+      match(sdl.symbols.SDL_Init(sdlInitVideo) :> Result.mapErr(SdlError)) {
+        Ok(_) => {
+          match(createWindow(sdl)) {
+            Ok(window) => {
+              match(createSurface(sdl, window)) {
+                    Ok(surface) => { Ok((sdl, window, surface)) },
+                Err(e) => { Err(e) }
+              }
+            },
+            Err(e) => { Err(e) }
+          }
+        },
+        Err(e) => { Err(e) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let startNative = () => {
+  match(initNative()) {
+    Ok((Var(sdl), Var(window), Var(surface))) => {
+      match(createEventState()) {
+        Ok((Var(eventPtr), Var(eventView))) => {
+          Ok((sdl, window, surface, eventPtr, eventView))
+        },
+        Err(e) => { Err(e) }
+      }
+    },
+    Err(e) => { Err(e) }
+  }
+};
+
+let makeMaterial = (color) => {
+  MeshBasicMaterial.new(JSON{ color: color })
+};
+
+let animationContext = () => {
+  .{
+    requestAnimationFrame = (callback) => { 0 },
+    cancelAnimationFrame = (id) => { void }
+  }
+};
+
+let buildScene = (surface) => {
+  match(Result|
+    Scene.new() :> Result.mapErr(ThreeError),
+    PerspectiveCamera.new(75, width / height, 0.1, 1000) :> Result.mapErr(ThreeError),
+    BoxGeometry.new(0.6, 0.6, 0.6) :> Result.mapErr(ThreeError),
+    BoxGeometry.new(0.6, 1.2, 0.6) :> Result.mapErr(ThreeError),
+    PlaneGeometry.new(18, 18) :> Result.mapErr(ThreeError),
+    makeMaterial(4500104) :> Result.mapErr(ThreeError),
+    makeMaterial(16734003) :> Result.mapErr(ThreeError),
+    makeMaterial(2236962) :> Result.mapErr(ThreeError),
+    OffscreenCanvas.new(width, height) :> Result.mapErr(DenoError),
+    surface.getContext("webgpu") :> Result.mapErr(DenoError)
+  |) {
+    Ok((Var(scene), Var(camera), Var(playerGeo), Var(enemyGeo), Var(floorGeo), Var(playerMat), Var(enemyMat), Var(floorMat), Var(canvas), Var(ctxOpt))) => {
+      match(expectSome("surface.getContext returned null", ctxOpt)) {
+        Ok(context) => {
+          match(Result|
+            Mesh.new(playerGeo, playerMat) :> Result.mapErr(ThreeError),
+            Mesh.new(enemyGeo, enemyMat) :> Result.mapErr(ThreeError),
+            Mesh.new(floorGeo, floorMat) :> Result.mapErr(ThreeError),
+            WebGPURenderer.new(JSON{
+              canvas: canvas,
+              context: context,
+              alpha: false,
+              antialias: false
+            }) :> Result.mapErr(ThreeError)
+          |) {
+            Ok((Var(player), Var(enemy), Var(wall), Var(renderer))) => {
+              let ready = Result|
+                scene.add(player) :> Result.mapErr(ThreeError),
+                scene.add(enemy) :> Result.mapErr(ThreeError),
+                scene.add(wall) :> Result.mapErr(ThreeError),
+                camera.position.set(0, 1.4, 4) :> Result.mapErr(ThreeError),
+                camera.lookAt(0, 0, 0) :> Result.mapErr(ThreeError),
+                player.position.set(0, 0.3, 0) :> Result.mapErr(ThreeError),
+                enemy.position.set(0, 0.6, -4) :> Result.mapErr(ThreeError),
+                wall.rotation.set(0 - 1.57079632679, 0, 0) :> Result.mapErr(ThreeError),
+                wall.position.set(0, 0, -4) :> Result.mapErr(ThreeError),
+                Color.new(1973790) :> Result.mapErr(ThreeError) :> Result.andThen((clear) => {
+                  renderer.setClearColor(clear, 1) :> Result.mapErr(ThreeError)
+                }),
+                assign(Global, animationContext()) :> Result.mapErr(ThreeError),
+                renderer.setSize(width, height, false) :> Result.mapErr(ThreeError)
+              |
+                :> Result.map((_) => {
+                  (scene, camera, renderer)
+                });
+              ready :> Task.fromResult :> Task.andThen((handles) => {
+                renderer.init() :> Task.mapErr(ThreeError) :> Task.map((_) => { handles })
+              })
+            },
+            Err(e) => { Err(e) :> Task.fromResult }
+          }
+        },
+        Err(e) => { Err(e) :> Task.fromResult }
+      }
+    },
+    Err(e) => { Err(e) :> Task.fromResult }
+  }
+};
+
+let rec pollQuit = (
+  sdl,
+  eventPtr,
+  eventView,
+  limit
+) => {
+  match(limit) {
+    0 => { Ok(false) },
+    _ => {
+      match(sdl.symbols.SDL_PollEvent(eventPtr) :> Result.mapErr(SdlError)) {
+        Ok(0) => { Ok(false) },
+        Ok(1) => {
+          match(eventView.getUint32(0) :> Result.mapErr(DenoError)) {
+            Ok(kind) => {
+              if (kind == sdlQuit) {
+                Ok(true)
+              } else {
+                pollQuit(sdl, eventPtr, eventView, limit - 1)
+              }
+            },
+            Err(e) => { Err(e) }
+          }
+        },
+        Ok(_) => { pollQuit(sdl, eventPtr, eventView, limit - 1) },
+        Err(e) => { Err(e) }
+      }
+    }
+  }
+};
+
+let rec spinFrames = (
+  sdl,
+  surface,
+  eventPtr,
+  eventView,
+  scene,
+  camera,
+  renderer,
+  game,
+  frames
+) => {
+  match(frames) {
+    0 => { Ok(game) },
+    _ => {
+      let yaw = game.yaw + 0.025;
+      match(pollQuit(sdl, eventPtr, eventView, 16)) {
+        Ok(true) => { Ok(game) },
+        Ok(false) => {
+          match(Result|
+            renderer.render(scene, camera),
+            surface.present()
+          | :> Result.mapErr(ThreeError)) {
+            Ok(_) => {
+              let nextGame = .{ ..game, yaw, frame = game.frame + 1 };
+              spinFrames(sdl, surface, eventPtr, eventView, scene, camera, renderer, nextGame, frames - 1)
+            },
+            Err(e) => { Err(e) }
+          }
+        },
+        Err(e) => { Err(e) }
+      }
+    }
+  }
+};
+
+let runGame = () => {
+  startNative() :> Task.fromResult :> Task.andThen((native) => {
+    let (sdl, window, surface, eventPtr, eventView) = native;
+    buildScene(surface) :> Task.andThen((handles) => {
+      let (scene, camera, renderer) = handles;
+      let game = .{ x = 0, z = 0, yaw = 0, frame = 0, last = 0 };
+      spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, renderer, game, 180) :> Task.fromResult
+    })
+  })
+};
+
+let main = () => {
+  runGame()
+    :> Task.map((_) => { print("workman three bootstrap ok") })
+    :> Task.recover((e) => { print(e) })
+};
