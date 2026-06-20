@@ -3,21 +3,43 @@ from js.module("three/webgpu") import {
   PerspectiveCamera,
   BoxGeometry,
   PlaneGeometry,
-  MeshBasicMaterial,
+  MeshStandardMaterial,
   Mesh,
   Color,
+  HemisphereLight,
+  DirectionalLight,
+  PointLight,
   WebGPURenderer,
 };
 from js.global import { OffscreenCanvas, Uint8Array };
 from js.global import * as Global;
 from js.global("Object") import { assign };
 from js.global("Deno") import {
+  args: Js.Array<String>,
   dlopen: _deep_,
   UnsafePointerView,
   UnsafeWindowSurface,
 };
+from js.global import { isNaN, parseInt };
 from js.global("Deno.UnsafePointer") import { of as pointerOf };
 from js.global("performance") import { now };
+from "./game.wm" import {
+  Game,
+  initialGame,
+  beginInput,
+  setQuit,
+  setKey,
+  addMouse,
+  stepGame,
+  cameraX,
+  cameraZ,
+  shouldQuit,
+  lookX,
+  lookY,
+  lookZ
+};
+
+let lift = Monad.lift;
 
 type AppError =
   | SdlError<Js.Error>
@@ -25,7 +47,9 @@ type AppError =
   | ThreeError<Js.Error>
   | Message<String>;
 
-record Game = { x: Number, z: Number, yaw: Number, frame: Number, last: Number };
+type PollStep = PollDone<Game> | PollAgain<Game>;
+type FrameStep = FrameDone<Game> | FrameNext<Game>;
+type FrameLimit = Unlimited | Remaining<Number>;
 record AnimationContext = {
   requestAnimationFrame: (Js.Value) => Number,
   cancelAnimationFrame: (Number) => Void
@@ -39,9 +63,17 @@ let sdlWindowResizable = 32;
 let sdlQuit = 256;
 let sdlKeydown = 768;
 let sdlKeyup = 769;
+let sdlMousemotion = 1024;
 let sdlWindowposCentered = 805240832;
 
 let okVoid = () => { Ok(void) };
+
+let denoResult = (value) => { value :> Result.mapErr(DenoError) };
+let sdlResult = (value) => { value :> Result.mapErr(SdlError) };
+let threeResult = (value) => { value :> Result.mapErr(ThreeError) };
+let argumentResult = (value) => {
+  value :> Result.mapErr((_) => { Message("invalid frame limit") })
+};
 
 let expectSome = (label, value) => {
   match(value) {
@@ -56,6 +88,40 @@ let expectNonZero = (label, value) => {
 
 let expectCodeZero = (label, value) => {
   if (value == 0) { Ok(void) } else { Err(Message(label)) }
+};
+
+let frameLimit = () => {
+  let parseLimit = (text) => {
+    let validate = lift Result (value) => {
+      let finish = lift Result (invalid) => {
+        if (invalid || value < 1) {
+          Err(Message("frame limit must be a positive integer"))
+        } else {
+          Ok(Remaining(value))
+        }
+      };
+
+      isNaN(value) :> argumentResult :> finish
+    };
+
+    parseInt(text, 10) :> argumentResult :> validate
+  };
+
+  let choose = lift Result (values) => {
+    match(Js.Array.toList(values)) {
+      [] => { Ok(Unlimited) },
+      [text, .._] => { parseLimit(text) }
+    }
+  };
+
+  args :> argumentResult :> choose
+};
+
+let nextFrameLimit = (limit) => {
+  match(limit) {
+    Unlimited => { Unlimited },
+    Remaining(frames) => { Remaining(frames - 1) }
+  }
 };
 
 let windowTitle = () => {
@@ -79,148 +145,142 @@ let loadSdl = () => {
     SDL_GetWindowWMInfo: JSON{ parameters: JSON["pointer", "pointer"], result: "i32" },
     SDL_GetVersion: JSON{ parameters: JSON["pointer"], result: "void" },
     SDL_PollEvent: JSON{ parameters: JSON["pointer"], result: "i32" },
+    SDL_SetRelativeMouseMode: JSON{ parameters: JSON["i32"], result: "i32" },
     SDL_Metal_CreateView: JSON{ parameters: JSON["pointer"], result: "pointer" }
   }) :> Result.mapErr(SdlError)
 };
 
 let createWindow = (sdl) => {
-  match(windowTitle() :> Result.mapErr(DenoError)) {
-    Ok(title) => {
-      match(sdl.symbols.SDL_CreateWindow(
+  let open = lift Result (title) => {
+    sdl.symbols.SDL_CreateWindow(
         Some(title),
         sdlWindowposCentered,
         sdlWindowposCentered,
         width,
         height,
         sdlWindowShown + sdlWindowResizable
-      )) {
-        Ok(raw) => { Ok(raw) },
-        Err(e) => { Err(SdlError(e)) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+      ) :> sdlResult
+  };
+
+  windowTitle() :> denoResult :> open
 };
 
 let pointerFromBuffer = (label, buffer) => {
-  match(pointerOf(buffer) :> Result.mapErr(DenoError)) {
-    Ok(ptr) => { expectSome(label, ptr) },
-    Err(e) => { Err(e) }
-  }
+  let requirePointer = lift Result (ptr) => { expectSome(label, ptr) };
+  pointerOf(buffer) :> denoResult :> requirePointer
 };
 
 let pointerView = (ptr) => {
-  UnsafePointerView.new(ptr) :> Result.mapErr(DenoError)
+  UnsafePointerView.new(ptr) :> denoResult
 };
 
 let win32Surface = (window, infoPtr, view) => {
-  match(Result|
-    view.getPointer(8),
-    view.getPointer(24)
-  | :> Result.mapErr(DenoError)) {
-    Ok((Var(hwndOpt), Var(hinstOpt))) => {
-      match(Result|
-        expectSome("missing HWND", hwndOpt),
-        expectSome("missing HINSTANCE", hinstOpt)
-      |) {
-        Ok((Var(hwnd), Var(hinst))) => {
-          UnsafeWindowSurface.new(JSON{
-            system: "win32",
-            windowHandle: hwnd,
-            displayHandle: hinst,
-            width: width,
-            height: height
-          }) :> Result.mapErr(DenoError)
-        },
-        Err(e) => { Err(e) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+  let create = lift Result (hwnd, hinst) => {
+    UnsafeWindowSurface.new(JSON{
+      system: "win32",
+      windowHandle: hwnd,
+      displayHandle: hinst,
+      width: width,
+      height: height
+    }) :> denoResult
+  };
+  let requireHandles = lift Result (hwndOpt, hinstOpt) => {
+    create(Result|
+      expectSome("missing HWND", hwndOpt),
+      expectSome("missing HINSTANCE", hinstOpt)
+    |)
+  };
+
+  requireHandles(Result|
+    view.getPointer(8) :> denoResult,
+    view.getPointer(24) :> denoResult
+  |)
 };
 
 let createSurface = (sdl, window) => {
-  match(Uint8Array.new(519) :> Result.mapErr(DenoError)) {
-    Ok(infoBuf) => {
-      match(pointerFromBuffer("SDL_SysWMInfo pointer was null", infoBuf)) {
-        Ok(infoPtr) => {
-          match(Result|
-            sdl.symbols.SDL_GetVersion(Some(infoPtr)) :> Result.mapErr(SdlError),
-            sdl.symbols.SDL_GetWindowWMInfo(window, Some(infoPtr)) :> Result.mapErr(SdlError),
-            pointerView(infoPtr)
-          |) {
-            Ok((_, _, Var(view))) => {
-              match(view.getUint32(4) :> Result.mapErr(DenoError)) {
-                Ok(1) => { win32Surface(window, infoPtr, view) },
-                Ok(_) => { Err(Message("expected SDL_SYSWM_WINDOWS")) },
-                Err(e) => { Err(e) }
-              }
-            },
-            Err(e) => { Err(e) }
-          }
-        },
-        Err(e) => { Err(e) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+  let validateSubsystem = lift Result (infoPtr, view, subsystem) => {
+    match(subsystem) {
+      1 => { win32Surface(window, infoPtr, view) },
+      _ => { Err(Message("expected SDL_SYSWM_WINDOWS")) }
+    }
+  };
+  let inspect = lift Result (infoPtr) => {
+    let view = pointerView(infoPtr);
+    let subsystem = lift Result (view) => { view.getUint32(4) :> denoResult };
+
+    validateSubsystem(Result|
+      Ok(infoPtr),
+      view,
+      subsystem(view)
+    |)
+  };
+  let populate = lift Result (infoPtr) => {
+    Result|
+      sdl.symbols.SDL_GetVersion(Some(infoPtr)) :> sdlResult,
+      sdl.symbols.SDL_GetWindowWMInfo(window, Some(infoPtr)) :> sdlResult
+    | :> Result.andThen((_) => { inspect(Ok(infoPtr)) })
+  };
+  let pointer = lift Result (buffer) => {
+    pointerFromBuffer("SDL_SysWMInfo pointer was null", buffer)
+  };
+
+  Uint8Array.new(519) :> denoResult :> pointer :> populate
 };
 
 let createEventState = () => {
-  match(Uint8Array.new(56) :> Result.mapErr(DenoError)) {
-    Ok(eventBuf) => {
-      match(pointerFromBuffer("SDL_Event pointer was null", eventBuf)) {
-        Ok(eventPtr) => {
-          match(pointerView(eventPtr)) {
-            Ok(eventView) => { Ok((eventPtr, eventView)) },
-            Err(e) => { Err(e) }
-          }
-        },
-        Err(e) => { Err(e) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+  let pairView = lift Result (eventPtr) => {
+    let pair = lift Result (eventView) => { Ok((eventPtr, eventView)) };
+    pointerView(eventPtr) :> pair
+  };
+  let pointer = lift Result (buffer) => {
+    pointerFromBuffer("SDL_Event pointer was null", buffer)
+  };
+
+  Uint8Array.new(56) :> denoResult :> pointer :> pairView
 };
 
 let initNative = () => {
-  match(loadSdl()) {
-    Ok(sdl) => {
-      match(sdl.symbols.SDL_Init(sdlInitVideo) :> Result.mapErr(SdlError)) {
-        Ok(_) => {
-          match(createWindow(sdl)) {
-            Ok(window) => {
-              match(createSurface(sdl, window)) {
-                    Ok(surface) => { Ok((sdl, window, surface)) },
-                Err(e) => { Err(e) }
-              }
-            },
-            Err(e) => { Err(e) }
-          }
-        },
-        Err(e) => { Err(e) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+  let openWindow = lift Result (sdl) => {
+    let pair = lift Result (window) => {
+      let enabled = lift Result (code) => {
+        expectCodeZero("SDL_SetRelativeMouseMode failed", code)
+          :> Result.map((_) => { (sdl, window) })
+      };
+
+      sdl.symbols.SDL_SetRelativeMouseMode(1) :> sdlResult :> enabled
+    };
+    createWindow(sdl) :> pair
+  };
+  let initialize = lift Result (sdl) => {
+    sdl.symbols.SDL_Init(sdlInitVideo)
+      :> sdlResult
+      :> Result.map((_) => { sdl })
+  };
+  let attachSurface = lift Result (sdl, window) => {
+    let triple = lift Result (surface) => { Ok((sdl, window, surface)) };
+    createSurface(sdl, window) :> triple
+  };
+
+  loadSdl() :> initialize :> openWindow :> attachSurface
 };
 
 let startNative = () => {
-  match(initNative()) {
-    Ok((Var(sdl), Var(window), Var(surface))) => {
-      match(createEventState()) {
-        Ok((Var(eventPtr), Var(eventView))) => {
-          Ok((sdl, window, surface, eventPtr, eventView))
-        },
-        Err(e) => { Err(e) }
-      }
-    },
-    Err(e) => { Err(e) }
-  }
+  let attachEvents = lift Result (sdl, window, surface) => {
+    let combine = lift Result (eventPtr, eventView) => {
+      Ok((sdl, window, surface, eventPtr, eventView))
+    };
+    createEventState() :> combine
+  };
+
+  initNative() :> attachEvents
 };
 
-let makeMaterial = (color) => {
-  MeshBasicMaterial.new(JSON{ color: color })
+let makeMaterial = (color, roughness, metalness) => {
+  MeshStandardMaterial.new(JSON{
+    color: color,
+    roughness: roughness,
+    metalness: metalness
+  })
 };
 
 let animationContext = () => {
@@ -231,94 +291,189 @@ let animationContext = () => {
 };
 
 let buildScene = (surface) => {
-  match(Result|
-    Scene.new() :> Result.mapErr(ThreeError),
-    PerspectiveCamera.new(75, width / height, 0.1, 1000) :> Result.mapErr(ThreeError),
-    BoxGeometry.new(0.6, 0.6, 0.6) :> Result.mapErr(ThreeError),
-    BoxGeometry.new(0.6, 1.2, 0.6) :> Result.mapErr(ThreeError),
-    PlaneGeometry.new(18, 18) :> Result.mapErr(ThreeError),
-    makeMaterial(4500104) :> Result.mapErr(ThreeError),
-    makeMaterial(16734003) :> Result.mapErr(ThreeError),
-    makeMaterial(2236962) :> Result.mapErr(ThreeError),
-    OffscreenCanvas.new(width, height) :> Result.mapErr(DenoError),
-    surface.getContext("webgpu") :> Result.mapErr(DenoError)
-  |) {
-    Ok((Var(scene), Var(camera), Var(playerGeo), Var(enemyGeo), Var(floorGeo), Var(playerMat), Var(enemyMat), Var(floorMat), Var(canvas), Var(ctxOpt))) => {
-      match(expectSome("surface.getContext returned null", ctxOpt)) {
-        Ok(context) => {
-          match(Result|
-            Mesh.new(playerGeo, playerMat) :> Result.mapErr(ThreeError),
-            Mesh.new(enemyGeo, enemyMat) :> Result.mapErr(ThreeError),
-            Mesh.new(floorGeo, floorMat) :> Result.mapErr(ThreeError),
-            WebGPURenderer.new(JSON{
-              canvas: canvas,
-              context: context,
-              alpha: false,
-              antialias: false
-            }) :> Result.mapErr(ThreeError)
-          |) {
-            Ok((Var(player), Var(enemy), Var(wall), Var(renderer))) => {
-              let ready = Result|
-                scene.add(player) :> Result.mapErr(ThreeError),
-                scene.add(enemy) :> Result.mapErr(ThreeError),
-                scene.add(wall) :> Result.mapErr(ThreeError),
-                camera.position.set(0, 1.4, 4) :> Result.mapErr(ThreeError),
-                camera.lookAt(0, 0, 0) :> Result.mapErr(ThreeError),
-                player.position.set(0, 0.3, 0) :> Result.mapErr(ThreeError),
-                enemy.position.set(0, 0.6, -4) :> Result.mapErr(ThreeError),
-                wall.rotation.set(0 - 1.57079632679, 0, 0) :> Result.mapErr(ThreeError),
-                wall.position.set(0, 0, -4) :> Result.mapErr(ThreeError),
-                Color.new(1973790) :> Result.mapErr(ThreeError) :> Result.andThen((clear) => {
-                  renderer.setClearColor(clear, 1) :> Result.mapErr(ThreeError)
-                }),
-                assign(Global, animationContext()) :> Result.mapErr(ThreeError),
-                renderer.setSize(width, height, false) :> Result.mapErr(ThreeError)
-              |
-                :> Result.map((_) => {
-                  (scene, camera, renderer)
-                });
-              ready :> Task.fromResult :> Task.andThen((handles) => {
-                renderer.init() :> Task.mapErr(ThreeError) :> Task.map((_) => { handles })
-              })
-            },
-            Err(e) => { Err(e) :> Task.fromResult }
-          }
-        },
-        Err(e) => { Err(e) :> Task.fromResult }
-      }
-    },
-    Err(e) => { Err(e) :> Task.fromResult }
-  }
+  let createObjects = lift Result (
+    scene,
+    camera,
+    playerGeo,
+    enemyGeo,
+    floorGeo,
+    playerMat,
+    enemyMat,
+    floorMat,
+    skyLight,
+    keyLight,
+    fillLight,
+    canvas,
+    contextOpt
+  ) => {
+    let assemble = lift Result (context) => {
+      Result|
+        Mesh.new(playerGeo, playerMat) :> threeResult,
+        Mesh.new(enemyGeo, enemyMat) :> threeResult,
+        Mesh.new(floorGeo, floorMat) :> threeResult,
+        WebGPURenderer.new(JSON{
+          canvas: canvas,
+          context: context,
+          alpha: false,
+          antialias: false
+        }) :> threeResult
+      | :> Result.map((player, enemy, wall, renderer) => {
+        (scene, camera, player, enemy, wall, skyLight, keyLight, fillLight, renderer)
+      })
+    };
+
+    expectSome("surface.getContext returned null", contextOpt) :> assemble
+  };
+  let configure = lift Result (scene, camera, player, enemy, wall, skyLight, keyLight, fillLight, renderer) => {
+    let setClear = lift Result (clear) => {
+      renderer.setClearColor(clear, 1) :> threeResult
+    };
+    let enableShadows = lift Result (shadowMap) => {
+      assign(shadowMap, JSON{ enabled: true }) :> threeResult
+    };
+
+    Result|
+      scene.add(player) :> threeResult,
+      scene.add(enemy) :> threeResult,
+      scene.add(wall) :> threeResult,
+      scene.add(skyLight) :> threeResult,
+      scene.add(keyLight) :> threeResult,
+      scene.add(fillLight) :> threeResult,
+      keyLight.position.set(4, 8, 3) :> threeResult,
+      fillLight.position.set(-2, 3, 1.5) :> threeResult,
+      assign(player, JSON{ castShadow: true, receiveShadow: true }) :> threeResult,
+      assign(enemy, JSON{ castShadow: true, receiveShadow: true }) :> threeResult,
+      assign(wall, JSON{ receiveShadow: true }) :> threeResult,
+      assign(keyLight, JSON{ castShadow: true }) :> threeResult,
+      renderer.shadowMap :> threeResult :> enableShadows,
+      camera.position.set(0, 1.4, 4) :> threeResult,
+      camera.lookAt(0, 0, 0) :> threeResult,
+      player.position.set(0, 0.3, 0) :> threeResult,
+      enemy.position.set(0, 0.6, -4) :> threeResult,
+      wall.rotation.set(0 - 1.57079632679, 0, 0) :> threeResult,
+      wall.position.set(0, 0, -4) :> threeResult,
+      Color.new(1973790) :> threeResult :> setClear,
+      assign(Global, animationContext()) :> threeResult,
+      renderer.setSize(width, height, false) :> threeResult
+    | :> Result.map((_) => { (scene, camera, player, renderer) })
+  };
+  let initialize = lift Task (scene, camera, player, renderer) => {
+    renderer.init()
+      :> Task.mapErr(ThreeError)
+      :> Task.map((_) => { (scene, camera, player, renderer) })
+  };
+
+  let resources = Result|
+    Scene.new() :> threeResult,
+    PerspectiveCamera.new(75, width / height, 0.1, 1000) :> threeResult,
+    BoxGeometry.new(0.6, 0.6, 0.6) :> threeResult,
+    BoxGeometry.new(0.6, 1.2, 0.6) :> threeResult,
+    PlaneGeometry.new(18, 18) :> threeResult,
+    makeMaterial(4500104, 0.55, 0.05) :> threeResult,
+    makeMaterial(16734003, 0.35, 0.1) :> threeResult,
+    makeMaterial(3095616, 0.9, 0) :> threeResult,
+    HemisphereLight.new(12573951, 2105376, 0.3) :> threeResult,
+    DirectionalLight.new(16777215, 2.2) :> threeResult,
+    PointLight.new(16755251, 45, 18, 2) :> threeResult,
+    OffscreenCanvas.new(width, height) :> denoResult,
+    surface.getContext("webgpu") :> denoResult
+  |;
+
+  resources :> createObjects :> configure :> Task.fromResult :> initialize
 };
 
-let rec pollQuit = (
+let pollEvent = (sdl, eventPtr, eventView, game) => {
+  let readMouse = () => {
+    Result|
+      eventView.getInt32(28) :> denoResult,
+      eventView.getInt32(32) :> denoResult
+    | :> Result.map((dx, dy) => { PollAgain(addMouse(game, dx, dy)) })
+  };
+  let readKey = (down) => {
+    eventView.getUint32(16)
+      :> denoResult
+      :> Result.map((scancode) => { PollAgain(setKey(game, scancode, down)) })
+  };
+  let classifyKind = lift Result (kind) => {
+    if (kind == sdlQuit) {
+      Ok(PollDone(setQuit(game)))
+    } else {
+      if (kind == sdlKeydown) {
+        readKey(true)
+      } else {
+        if (kind == sdlKeyup) {
+          readKey(false)
+        } else {
+          if (kind == sdlMousemotion) {
+            readMouse()
+          } else {
+            Ok(PollAgain(game))
+          }
+        }
+      }
+    }
+  };
+  let classifyStatus = lift Result (status) => {
+    match(status) {
+      0 => { Ok(PollDone(game)) },
+      1 => { eventView.getUint32(0) :> denoResult :> classifyKind },
+      _ => { Ok(PollAgain(game)) }
+    }
+  };
+
+  sdl.symbols.SDL_PollEvent(eventPtr) :> sdlResult :> classifyStatus
+};
+
+let rec pollInput = (
   sdl,
   eventPtr,
   eventView,
+  game,
   limit
 ) => {
   match(limit) {
-    0 => { Ok(false) },
+    0 => { Ok(game) },
     _ => {
-      match(sdl.symbols.SDL_PollEvent(eventPtr) :> Result.mapErr(SdlError)) {
-        Ok(0) => { Ok(false) },
-        Ok(1) => {
-          match(eventView.getUint32(0) :> Result.mapErr(DenoError)) {
-            Ok(kind) => {
-              if (kind == sdlQuit) {
-                Ok(true)
-              } else {
-                pollQuit(sdl, eventPtr, eventView, limit - 1)
-              }
-            },
-            Err(e) => { Err(e) }
-          }
-        },
-        Ok(_) => { pollQuit(sdl, eventPtr, eventView, limit - 1) },
+      match(pollEvent(sdl, eventPtr, eventView, game)) {
+        Ok(PollDone(done)) => { Ok(done) },
+        Ok(PollAgain(next)) => { pollInput(sdl, eventPtr, eventView, next, limit - 1) },
         Err(e) => { Err(e) }
       }
     }
   }
+};
+
+let stepFrame = (
+  sdl,
+  surface,
+  eventPtr,
+  eventView,
+  scene,
+  camera,
+  player,
+  renderer,
+  game
+) => {
+  let advance = lift Result (inputGame, time) => {
+    if (shouldQuit(inputGame)) {
+      Ok(FrameDone(inputGame))
+    } else {
+      let nextGame = stepGame(inputGame, time);
+      let finish = lift Result (_) => { Ok(FrameNext(nextGame)) };
+
+      Result|
+        camera.position.set(cameraX(nextGame), 1.4, cameraZ(nextGame)),
+        camera.lookAt(lookX(nextGame), lookY(nextGame), lookZ(nextGame)),
+        renderer.render(scene, camera),
+        surface.present()
+      | :> threeResult :> finish
+    }
+  };
+
+  Result|
+    pollInput(sdl, eventPtr, eventView, beginInput(game), 64),
+    now() :> denoResult
+  | :> advance
 };
 
 let rec spinFrames = (
@@ -328,27 +483,18 @@ let rec spinFrames = (
   eventView,
   scene,
   camera,
+  player,
   renderer,
   game,
-  frames
+  limit
 ) => {
-  match(frames) {
-    0 => { Ok(game) },
+  match(limit) {
+    Remaining(0) => { Ok(game) },
     _ => {
-      let yaw = game.yaw + 0.025;
-      match(pollQuit(sdl, eventPtr, eventView, 16)) {
-        Ok(true) => { Ok(game) },
-        Ok(false) => {
-          match(Result|
-            renderer.render(scene, camera),
-            surface.present()
-          | :> Result.mapErr(ThreeError)) {
-            Ok(_) => {
-              let nextGame = .{ ..game, yaw, frame = game.frame + 1 };
-              spinFrames(sdl, surface, eventPtr, eventView, scene, camera, renderer, nextGame, frames - 1)
-            },
-            Err(e) => { Err(e) }
-          }
+      match(stepFrame(sdl, surface, eventPtr, eventView, scene, camera, player, renderer, game)) {
+        Ok(FrameDone(done)) => { Ok(done) },
+        Ok(FrameNext(next)) => {
+          spinFrames(sdl, surface, eventPtr, eventView, scene, camera, player, renderer, next, nextFrameLimit(limit))
         },
         Err(e) => { Err(e) }
       }
@@ -357,14 +503,20 @@ let rec spinFrames = (
 };
 
 let runGame = () => {
-  startNative() :> Task.fromResult :> Task.andThen((native) => {
+  let createScene = lift Task (limit, native) => {
     let (sdl, window, surface, eventPtr, eventView) = native;
-    buildScene(surface) :> Task.andThen((handles) => {
-      let (scene, camera, renderer) = handles;
-      let game = .{ x = 0, z = 0, yaw = 0, frame = 0, last = 0 };
-      spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, renderer, game, 180) :> Task.fromResult
-    })
-  })
+    buildScene(surface) :> Task.map((handles) => { (native, handles, limit) })
+  };
+  let play = lift Task (native, handles, limit) => {
+    let (sdl, window, surface, eventPtr, eventView) = native;
+    let (scene, camera, player, renderer) = handles;
+    let game = initialGame();
+
+    spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, player, renderer, game, limit)
+      :> Task.fromResult
+  };
+
+  Result|frameLimit(), startNative()| :> Task.fromResult :> createScene :> play
 };
 
 let main = () => {

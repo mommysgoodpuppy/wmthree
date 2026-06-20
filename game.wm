@@ -1,0 +1,166 @@
+from "./trig.wm" import { sin, cos };
+
+record Controls = {
+  forward: Bool,
+  backward: Bool,
+  left: Bool,
+  right: Bool,
+  mouseX: Number,
+  mouseY: Number,
+  quit: Bool
+};
+
+record Game = {
+  x: Number,
+  z: Number,
+  yaw: Number,
+  pitch: Number,
+  frame: Number,
+  last: Number,
+  controls: Controls
+};
+
+let scancodeA = 4;
+let scancodeD = 7;
+let scancodeS = 22;
+let scancodeW = 26;
+let scancodeEscape = 41;
+
+let initialControls = () => {
+  .{
+    forward = false,
+    backward = false,
+    left = false,
+    right = false,
+    mouseX = 0,
+    mouseY = 0,
+    quit = false
+  }
+};
+
+let initialGame = () => {
+  .{
+    x = 0,
+    z = 4,
+    yaw = 0,
+    pitch = 0,
+    frame = 0,
+    last = 0,
+    controls = initialControls()
+  }
+};
+
+let withControls = (game: Game, controls: Controls) => {
+  .{
+    x = game.x,
+    z = game.z,
+    yaw = game.yaw,
+    pitch = game.pitch,
+    frame = game.frame,
+    last = game.last,
+    controls
+  }
+};
+
+let controlsWithMouse = (controls: Controls, mouseX: Number, mouseY: Number) => {
+  .{
+    forward = controls.forward,
+    backward = controls.backward,
+    left = controls.left,
+    right = controls.right,
+    mouseX,
+    mouseY,
+    quit = controls.quit
+  }
+};
+
+let controlsWithKey = (
+  controls: Controls,
+  forward: Bool,
+  backward: Bool,
+  left: Bool,
+  right: Bool,
+  quit: Bool
+) => {
+  .{ forward, backward, left, right, mouseX = controls.mouseX, mouseY = controls.mouseY, quit }
+};
+
+let beginInput = (game: Game) => {
+  withControls(game, controlsWithMouse(game.controls, 0, 0))
+};
+
+let setQuit = (game: Game) => {
+  let c = game.controls;
+  withControls(game, controlsWithKey(c, c.forward, c.backward, c.left, c.right, true))
+};
+
+let setKey = (game: Game, scancode: Number, down: Bool) => {
+  let c = game.controls;
+  let controls =
+    if (scancode == scancodeW) {
+      controlsWithKey(c, down, c.backward, c.left, c.right, c.quit)
+    } else {
+      if (scancode == scancodeS) {
+        controlsWithKey(c, c.forward, down, c.left, c.right, c.quit)
+      } else {
+        if (scancode == scancodeA) {
+          controlsWithKey(c, c.forward, c.backward, down, c.right, c.quit)
+        } else {
+          if (scancode == scancodeD) {
+            controlsWithKey(c, c.forward, c.backward, c.left, down, c.quit)
+          } else {
+            if (scancode == scancodeEscape) {
+              controlsWithKey(c, c.forward, c.backward, c.left, c.right, down || c.quit)
+            } else {
+              c
+            }
+          }
+        }
+      }
+    };
+  withControls(game, controls)
+};
+
+let addMouse = (game: Game, dx: Number, dy: Number) => {
+  let c = game.controls;
+  withControls(game, controlsWithMouse(c, c.mouseX + dx, c.mouseY + dy))
+};
+
+let axis = (positive, negative) => {
+  let p = if (positive) { 1 } else { 0 };
+  let n = if (negative) { 1 } else { 0 };
+  p - n
+};
+
+let clamp = (value, low, high) => {
+  if (value < low) { low } else { if (value > high) { high } else { value } }
+};
+
+let stepGame = (game: Game, time: Number) => {
+  let rawDt = if (game.last == 0) { 0 } else { (time - game.last) / 1000 };
+  let dt = clamp(rawDt, 0, 0.05);
+  let yaw = game.yaw + game.controls.mouseX * 0.002;
+  let pitch = clamp(game.pitch - game.controls.mouseY * 0.002, -1.45, 1.45);
+  let forward = axis(game.controls.forward, game.controls.backward);
+  let strafe = axis(game.controls.right, game.controls.left);
+  let speed = 3.5;
+  let x = game.x + (sin(yaw) * forward + cos(yaw) * strafe) * speed * dt;
+  let z = game.z + ((0 - cos(yaw)) * forward + sin(yaw) * strafe) * speed * dt;
+
+  .{
+    x,
+    z,
+    yaw,
+    pitch,
+    frame = game.frame + 1,
+    last = time,
+    controls = game.controls
+  }
+};
+
+let lookX = (game: Game) => { game.x + sin(game.yaw) * cos(game.pitch) };
+let lookY = (game: Game) => { 1.4 + sin(game.pitch) };
+let lookZ = (game: Game) => { game.z - cos(game.yaw) * cos(game.pitch) };
+let cameraX = (game: Game) => { game.x };
+let cameraZ = (game: Game) => { game.z };
+let shouldQuit = (game: Game) => { game.controls.quit };
