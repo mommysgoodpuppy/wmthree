@@ -1,0 +1,118 @@
+-- Project Bigger Fish — a small declarative level-building library.
+--
+-- A level is described as an immutable tree of `Node`s and composed with pure
+-- combinators, in the spirit of react-three-fiber's nested <group> but built
+-- from an algebraic data type and a fold instead of React. The tree is pure
+-- data; `solids` flattens it into the flat (cx,cy,cz,hx,hy,hz,kind) tuples that
+-- collision (game.wm) and rendering (main.wm) already consume. So the
+-- declarative description compiles down to the primitive list with no special
+-- support needed at the FFI boundary.
+--
+-- Combinators (all return `Node`):
+--   box(w, h, d, kind)   a box of full dimensions, centered at the local origin
+--   at(x, y, z, node)    translate a subtree
+--   mirrorX(node)        reflect a subtree across the X = 0 plane (bilateral
+--                        symmetry: build one arm/leg, mirror it for the other)
+--   group(nodes)         combine a list of subtrees
+--   solids(node)         flatten a tree into a List of solid tuples
+--
+-- Reflection of an axis-aligned box stays axis-aligned, and only translation is
+-- otherwise applied, so every flattened solid remains a valid AABB for the
+-- collision resolver. Rotation/scale inside the tree are intentionally omitted
+-- for now (they would produce oriented boxes); they can be added later as new
+-- Node constructors plus matching flatten arms.
+
+type Node =
+  | Box<Number, Number, Number, Number, Number, Number, Number>
+  | Move<Number, Number, Number, Node>
+  | FlipX<Node>
+  | Nodes<List<Node>>;
+
+let box = (w, h, d, kind) => { Box(0, 0, 0, w / 2, h / 2, d / 2, kind) };
+let at = (x, y, z, node) => { Move(x, y, z, node) };
+let mirrorX = (node) => { FlipX(node) };
+let group = (nodes) => { Nodes(nodes) };
+
+-- Interior helpers. These build axis-aligned walls that sit on the floor (their
+-- base is at y = 0 in the returned node's frame), so a floor plan is authored by
+-- placing them with `at(x, 0, z, ...)`.
+--   wallX     a wall running along X (wide in X, thin in Z)
+--   wallZ     a wall running along Z (thin in X, deep in Z)
+--   doorwayX  a wallX split into two segments around a centered door gap
+let wallX = (length, height, thickness, kind) => {
+  at(0, height / 2, 0, box(length, height, thickness, kind))
+};
+
+let wallZ = (depth, height, thickness, kind) => {
+  at(0, height / 2, 0, box(thickness, height, depth, kind))
+};
+
+let doorwayX = (length, height, thickness, doorWidth, kind) => {
+  let segLength = (length - doorWidth) / 2;
+  let segOffset = (length + doorWidth) / 4;
+  group([
+    at(0 - segOffset, height / 2, 0, box(segLength, height, thickness, kind)),
+    at(segOffset, height / 2, 0, box(segLength, height, thickness, kind))
+  ])
+};
+
+-- A staircase ascending toward +Z from a base at z = 0. Each step is a solid
+-- block from the floor up to its tread, so the whole flight collides cleanly and
+-- (with a small enough `rise`) is climbed by the step-up logic in game.wm.
+let rec ascend = (i, steps, rise, run, width, kind) => {
+  if (i >= steps) {
+    []
+  } else {
+    let top = (i + 1) * rise;
+    [at(0, top / 2, i * run + run / 2, box(width, top, run, kind)),
+     ..ascend(i + 1, steps, rise, run, width, kind)]
+  }
+};
+
+let stairsZ = (steps, rise, run, width, kind) => {
+  group(ascend(0, steps, rise, run, width, kind))
+};
+
+let rec append = (xs, ys) => {
+  match(xs) {
+    [] => { ys },
+    [Var(h), ..Var(t)] => { [h, ..append(t, ys)] }
+  }
+};
+
+let rec translateAll = (dx, dy, dz, items) => {
+  match(items) {
+    [] => { [] },
+    [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), Var(k)), ..Var(rest)] => {
+      [(cx + dx, cy + dy, cz + dz, hx, hy, hz, k), ..translateAll(dx, dy, dz, rest)]
+    }
+  }
+};
+
+let rec flipAll = (items) => {
+  match(items) {
+    [] => { [] },
+    [(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), Var(k)), ..Var(rest)] => {
+      [(0 - cx, cy, cz, hx, hy, hz, k), ..flipAll(rest)]
+    }
+  }
+};
+
+let rec flatten = (node) => {
+  match(node) {
+    Box(Var(cx), Var(cy), Var(cz), Var(hx), Var(hy), Var(hz), Var(k)) => {
+      [(cx, cy, cz, hx, hy, hz, k)]
+    },
+    Move(Var(dx), Var(dy), Var(dz), Var(child)) => { translateAll(dx, dy, dz, flatten(child)) },
+    FlipX(Var(child)) => { flipAll(flatten(child)) },
+    Nodes(Var(children)) => { flattenAll(children) }
+  }
+}
+and flattenAll = (nodes) => {
+  match(nodes) {
+    [] => { [] },
+    [Var(n), ..Var(rest)] => { append(flatten(n), flattenAll(rest)) }
+  }
+};
+
+let solids = (node) => { flatten(node) };

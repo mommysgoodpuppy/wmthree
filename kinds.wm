@@ -1,0 +1,12 @@
+-- Project Bigger Fish — material-palette indices ("kinds").
+--
+-- A kind is the tag carried by each solid that selects a material at the render
+-- boundary. Level modules tag their geometry with these names; main.wm builds
+-- its material palette in this same order and matches on these values. Keeping
+-- the numbers in one place ties the level authors and the renderer together.
+
+let panel = 1;   -- light steel plating
+let strut = 2;   -- dark structural steel (legs, frame, exhaust)
+let hull = 3;    -- mid steel body masses
+let crate = 4;   -- world props (wood)
+let accent = 5;  -- bright accent (cockpit trim, head, crane)

@@ -1,6 +1,7 @@
 {
   "nodeModulesDir":"auto",
   "imports": {
+    "@dimforge/rapier3d-compat": "npm:@dimforge/rapier3d-compat@^0.19.3",
     "@goodpuppies/logicalassert": "jsr:@goodpuppies/logicalassert@0.1.2",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@0.1.0",
     "@std/assert": "jsr:@std/assert@1.0.13",

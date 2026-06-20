@@ -1,0 +1,19 @@
+-- Project Bigger Fish — the exterior world, authored declaratively in WORLD
+-- coordinates with the level library. For now the world holds a couple of
+-- crates in the yard; terrain and outposts will grow here. `mechPose` is where
+-- the mech is currently parked.
+
+from "../build.wm" import { Node, box, at, group, solids as assemble };
+from "../kinds.wm" import { crate };
+
+let props = () => {
+  group([
+    at(2, 0.5, -2, box(1.0, 1.0, 1.0, crate)),
+    at(-1.5, 0.5, 0, box(1.0, 1.0, 1.0, crate))
+  ])
+};
+
+let solids = () => { assemble(props()) };
+
+let spawn = () => { (0, 1.4, 4) };       -- on-foot world spawn
+let mechPose = () => { (0, 0, -8, 0) };  -- mech parked pose (x, y, z, yaw)

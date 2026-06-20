@@ -1,0 +1,115 @@
+-- Project Bigger Fish — Rapier physics boundary (direct safe FFI).
+--
+-- Talks to @dimforge/rapier3d-compat directly through Workman's safe FFI, no
+-- TypeScript shim. Every reflected Rapier call is fallible and returns a
+-- `Result<_, Js.Error>`, exactly like the Three constructors, so the setup
+-- functions compose those Results with `Monad.lift`.
+--
+-- FFI notes (recorded in markdown/WORKMAN_THREE_FFI_NOTES.md):
+--   * Reaching this package needed the reflection host's module resolution
+--     relaxed from NodeNext to Bundler; under NodeNext the package's ESM type
+--     graph did not resolve and every member fell back to Js.Value.
+--   * A namespace import (`import * as Rapier`) is used so the static factory
+--     methods (RigidBodyDesc.fixed(), ColliderDesc.cuboid(), ...) reflect as
+--     receiver calls. Named class imports only expose `.new`.
+--
+-- Vectors are the structural { x, y, z } interface: passed as JSON{...} and read
+-- back by projection.
+
+from js.module("@dimforge/rapier3d-compat") import * as Rapier;
+from js.module("@dimforge/rapier3d-compat") import {
+  World,
+  RigidBody,
+  Collider,
+  KinematicCharacterController
+};
+
+let lift = Monad.lift;
+
+-- Gives a value projected off a reflected foreign Vector a concrete Number type
+-- context, so it can leave the FFI boundary instead of escaping as an unresolved
+-- obligation.
+let asNumber = (n: Number) => { n };
+
+-- init() returns a Promise; Workman surfaces it as a Task.
+let initPhysics = () => {
+  Rapier.init() :> Task.map((_) => { void })
+};
+
+let createWorld = (gx, gy, gz) => {
+  Rapier.World.new(JSON{ x: gx, y: gy, z: gz })
+};
+
+-- A static fixed-body box collider at (cx, cy, cz) with the given half extents.
+let addStaticBox = (world, cx, cy, cz, hx, hy, hz) => {
+  let place = lift Result (fixedDesc) => {
+    let attach = lift Result (bodyDesc) => {
+      let withBody = lift Result (body) => {
+        let collide = lift Result (colliderDesc) => {
+          world.createCollider(colliderDesc, Some(body))
+        };
+        Rapier.ColliderDesc.cuboid(hx, hy, hz) :> collide
+      };
+      world.createRigidBody(bodyDesc) :> withBody
+    };
+    fixedDesc.setTranslation(cx, cy, cz) :> attach
+  };
+  Rapier.RigidBodyDesc.fixed() :> place
+};
+
+-- A kinematic capsule for the player plus its collider, returned together.
+let createPlayer = (world, x, y, z, halfHeight, radius) => {
+  let place = lift Result (kinematicDesc) => {
+    let attach = lift Result (bodyDesc) => {
+      let withBody = lift Result (body) => {
+        let collide = lift Result (colliderDesc) => {
+          world.createCollider(colliderDesc, Some(body))
+            :> Result.map((collider) => { (body, collider) })
+        };
+        Rapier.ColliderDesc.capsule(halfHeight, radius) :> collide
+      };
+      world.createRigidBody(bodyDesc) :> withBody
+    };
+    kinematicDesc.setTranslation(x, y, z) :> attach
+  };
+  Rapier.RigidBodyDesc.kinematicPositionBased() :> place
+};
+
+let createController = (world, offset) => {
+  let configure = lift Result (controller) => {
+    Result|
+      controller.enableAutostep(0.6, 0.2, true),
+      controller.enableSnapToGround(0.3),
+      controller.setApplyImpulsesToDynamicBodies(true)
+    | :> Result.map((_) => { controller })
+  };
+  world.createCharacterController(offset) :> configure
+};
+
+-- One movement + integration step for the kinematic character. Returns the new
+-- world position and whether the controller considers the character grounded.
+let moveCharacter = (world, controller, collider, body, dx, dy, dz) => {
+  let read = lift Result (move, grounded, here) => {
+    let stepped = lift Result (_) => {
+      body.translation()
+        :> Result.map((after) => {
+          (asNumber(after.x), asNumber(after.y), asNumber(after.z), grounded)
+        })
+    };
+    body.setNextKinematicTranslation(JSON{
+      x: here.x + move.x,
+      y: here.y + move.y,
+      z: here.z + move.z
+    })
+      :> Result.andThen((_) => { world.step() })
+      :> stepped
+  };
+  controller.computeColliderMovement(collider, JSON{ x: dx, y: dy, z: dz })
+    :> Result.andThen((_) => {
+      read(Result|
+        controller.computedMovement(),
+        controller.computedGrounded(),
+        body.translation()
+      |)
+    })
+};

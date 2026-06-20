@@ -1,0 +1,26 @@
+-- Project Bigger Fish — coordinate-frame math.
+--
+-- A pose is (px, py, pz, yaw): a frame's origin in world space plus a rotation
+-- about the Y axis. `toWorld` maps a point expressed in that local frame into
+-- world space; `toLocal` is its exact inverse. Because they are inverses, the
+-- same axis-aligned collision routine can run in any frame at any yaw: convert
+-- the player into the frame, slide against the frame's solids, convert back.
+--
+-- Forward in this game is -Z at yaw 0, matching game.wm's look vector.
+
+from "./trig.wm" import { sin, cos };
+
+let toWorld = (px, py, pz, yaw, lx, ly, lz) => {
+  let c = cos(yaw);
+  let s = sin(yaw);
+  (px + c * lx + s * lz, py + ly, pz - s * lx + c * lz)
+};
+
+let toLocal = (px, py, pz, yaw, wx, wy, wz) => {
+  let c = cos(yaw);
+  let s = sin(yaw);
+  let dx = wx - px;
+  let dy = wy - py;
+  let dz = wz - pz;
+  (c * dx - s * dz, dy, s * dx + c * dz)
+};
