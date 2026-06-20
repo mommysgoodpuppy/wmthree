@@ -8,6 +8,7 @@
     "jsr:@std/internal@^1.0.6": "1.0.13",
     "npm:@dimforge/rapier3d-compat@~0.19.3": "0.19.3",
     "npm:@types/three@0.184": "0.184.0",
+    "npm:pngjs@7": "7.0.0",
     "npm:three@0.184": "0.184.0"
   },
   "jsr": {
@@ -63,6 +64,9 @@
     "meshoptimizer@1.1.1": {
       "integrity": "sha512-oRFNWJRDA/WTrVj7NWvqa5HqE1t9MYDj2VaWirQCzCCrAd2GHrqR/sQezCxiWATPNlKTcRaPRHPJwIRoPBAp5g=="
     },
+    "pngjs@7.0.0": {
+      "integrity": "sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow=="
+    },
     "three@0.184.0": {
       "integrity": "sha512-wtTRjG92pM5eUg/KuUnHsqSAlPM296brTOcLgMRqEeylYTh/CdtvKUvCyyCQTzFuStieWxvZb8mVTMvdPyUpxg=="
     }
@@ -74,6 +78,7 @@
       "jsr:@std/assert@1.0.13",
       "npm:@dimforge/rapier3d-compat@~0.19.3",
       "npm:@types/three@0.184",
+      "npm:pngjs@7",
       "npm:three@0.184"
     ]
   }

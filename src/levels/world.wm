@@ -3,8 +3,8 @@
 -- fishing pond with a dock, bait beds, and a few service crates. `mechPose` is
 -- where the mech is currently parked.
 
-from "../build.wm" import { Node, box, at, group, solids as assemble };
-from "../kinds.wm" import { panel, crate, water, earth, foliage };
+from "../lib/build.wm" import { Node, box, at, group, solids as assemble };
+from "../lib/kinds.wm" import { panel, crate, water, earth, foliage };
 
 let props = () => {
   group([

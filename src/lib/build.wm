@@ -4,7 +4,7 @@
 -- combinators, in the spirit of react-three-fiber's nested <group> but built
 -- from an algebraic data type and a fold instead of React. The tree is pure
 -- data; `solids` flattens it into the flat (cx,cy,cz,hx,hy,hz,kind) tuples that
--- collision (game.wm) and rendering (main.wm) already consume. So the
+-- collision (src/game.wm) and rendering (src/main.wm) already consume. So the
 -- declarative description compiles down to the primitive list with no special
 -- support needed at the FFI boundary.
 --

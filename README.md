@@ -15,13 +15,16 @@ TypeScript layer.
 
 ```txt
 C:\GIT\wmthree
-  main.wm                       SDL, WebGPU, Three, input, rendering, frame loop
-  game.wm                       Pure immutable FPS state and movement
-  trig.wm                       Pure Workman sine and cosine
-  threedeno.ts                  Original TypeScript reference implementation
+  src\main.wm                   SDL, WebGPU, Three, input, rendering, frame loop
+  src\game.wm                   Pure immutable FPS state and movement
+  src\levels\                   Declarative world and mech geometry
+  src\lib\                      Reusable Workman math, level, and physics modules
+  tests\gameplay.wm             Deterministic gameplay scenarios
+  tests\playtest\               Workman visual capture drivers
+  tools\ts\                     Narrow JavaScript, PNG, and WebGPU bridges
+  docs\                         Engineering notes and game design
   SDL2.dll                      Native SDL2 library used on Windows
   deno.json                     Three.js dependency and Deno configuration
-  WORKMAN_THREE_FFI_NOTES.md    Resolved blockers and remaining edges
 ```
 
 The Workman compiler repository is:
@@ -41,7 +44,7 @@ cd C:\GIT\wmthree
 ### Interactive run
 
 ```powershell
-wm run main.wm
+wm run src/main.wm
 ```
 
 With no arguments, the game runs until one of these events occurs:
@@ -71,7 +74,7 @@ are counted when the hook lands in the pond.
 Pass one positive integer after `--` to stop automatically after that many frames:
 
 ```powershell
-wm run main.wm -- 180
+wm run src/main.wm -- 180
 ```
 
 This is useful for compiler and runtime checks because it does not require manually closing the
@@ -80,29 +83,107 @@ window.
 Examples:
 
 ```powershell
-wm run main.wm -- 1
-wm run main.wm -- 60
-wm run main.wm -- 600
+wm run src/main.wm -- 1
+wm run src/main.wm -- 60
+wm run src/main.wm -- 600
 ```
 
 Invalid limits fail before SDL initialization:
 
 ```powershell
-wm run main.wm -- 0
+wm run src/main.wm -- 0
 ```
 
 ### Type-check only
 
 ```powershell
-wm check main.wm
+wm check src/main.wm
 ```
 
-`wm check` checks the complete Workman module graph, including `game.wm` and `trig.wm`.
+`wm check` checks the complete Workman module graph, including `src/game.wm` and `src/lib/trig.wm`.
+
+### Deterministic gameplay tests
+
+The pure gameplay core has a programmable test harness:
+
+```powershell
+wm run tests/gameplay.wm
+```
+
+or through Deno task aliases:
+
+```powershell
+deno task check
+deno task test:gameplay
+```
+
+`tests/gameplay.wm` drives `src/game.wm` directly with synthetic key, mouse, placement, and frame ticks.
+It includes a small action-script interpreter (`KeyDown`, `KeyUp`, `TapKey`, `MoveMouse`,
+`WaitFrames`, `PlacePlayerAt`, `PlaceMechAt`, `SetClock`) so tests can describe gameplay flows as
+data and replay them deterministically.
+
+The suite covers forward/back/strafe movement, mouse pitch clamping, jumping and landing, cockpit
+entry/exit, mech driving and turning, successful and missed fishing casts, non-pilot space behavior,
+frame delta clamping, quit input, a scripted mini-mission, and a long-run invariant pass that checks
+state stays finite over hundreds of simulated frames. This avoids SDL, WebGPU, and Rapier so
+gameplay rules can be tested quickly and deterministically.
+
+### Scripted playtest snapshots
+
+Generate the complete AI-reviewable playtest bundle with:
+
+```powershell
+deno task playtest:snapshots
+```
+
+`playtest:snapshots` includes actual Three/WebGPU render-target readbacks. The older command remains
+as an alias:
+
+```powershell
+deno task playtest:actual
+```
+
+This writes to:
+
+```txt
+artifacts\playtest\latest
+```
+
+The run captures named points of interest as state JSON plus multiple PNG views:
+
+- `manifest.json` summarizes the route and lists every capture.
+- `states\*.json` stores frame, time, player, mech, fishing, and hook state.
+- `images\*.png` is an orthographic Three/WebGPU view for navigation and spatial review.
+- `actual_views\*.png` is a perspective Three/WebGPU view from the captured player camera.
+
+Both views render into a `RenderTarget` from Workman, use `readRenderTargetPixelsAsync`, and encode
+the resulting framebuffer with `pngjs`. `deno task playtest:states` runs only the deterministic
+route and JSON state capture when images are not needed.
+
+The default route covers spawn, cockpit interaction, mech driving, an active pond cast, and the
+post-catch state. The artifact directory is ignored by Git.
+
+Validate the latest artifact bundle with:
+
+```powershell
+deno task playtest:verify
+```
+
+The verifier parses `manifest.json`, all sidecar JSON files, and every top-down and actual
+GPU-rendered PNG header present in the manifest. It also checks that the route
+includes both an active fishing capture and a completed catch capture. PNG generation uses `pngjs`;
+the verifier reads the PNG signature and dimensions directly to avoid runtime-specific Node zlib
+assumptions in `pngjs`'s sync decoder.
+
+Most of the artifact path is intentionally in Workman: route replay, state extraction, scene
+construction, render-target sequencing, and capture ordering. A single TypeScript artifact bridge
+owns PNG/JSON filesystem output, headless renderer bootstrap, narrow object-method bridges that
+Workman's current FFI cannot express cleanly, framebuffer encoding, and bundle validation.
 
 ### Compile without running
 
 ```powershell
-wm compile main.wm out.mjs
+wm compile src/main.wm out.mjs
 ```
 
 The emitted JavaScript can be inspected when validating lowering, reflected imports, or tail-call
@@ -129,7 +210,7 @@ wm help                          show CLI help
 The compatibility form also compiles:
 
 ```powershell
-wm main.wm out.mjs
+wm src/main.wm out.mjs
 ```
 
 Prefer the explicit command names in documentation and scripts.
@@ -137,7 +218,7 @@ Prefer the explicit command names in documentation and scripts.
 Use `wm type-debug` when a normal diagnostic does not explain an unresolved type or FFI obligation:
 
 ```powershell
-wm type-debug main.wm
+wm type-debug src/main.wm
 ```
 
 ## Workman Documentation
@@ -211,7 +292,7 @@ Keep game rules and state transitions in ordinary Workman modules:
 input snapshot + game state + delta time -> next game state
 ```
 
-`game.wm` owns:
+`src/game.wm` owns:
 
 - controls
 - player position
@@ -219,7 +300,7 @@ input snapshot + game state + delta time -> next game state
 - delta-time movement
 - camera query functions
 
-`main.wm` owns:
+`src/main.wm` owns:
 
 - SDL FFI
 - event decoding
@@ -527,8 +608,8 @@ For each feature:
 1. Define the smallest visible game behavior.
 2. Decide whether it belongs in the pure core or the FFI boundary.
 3. Implement it in Workman first.
-4. Run `wm check main.wm` after each structural change.
-5. Run a short capped probe such as `wm run main.wm -- 60`.
+4. Run `wm check src/main.wm` after each structural change.
+5. Run a short capped probe such as `wm run src/main.wm -- 60`.
 6. Inspect emitted JavaScript when validating TCO or reflection.
 7. Record a reproducible compiler issue when Workman behavior is incorrect.
 8. Use a local TypeScript helper only if the operation requires a missing host primitive.
@@ -536,9 +617,9 @@ For each feature:
 Recommended verification before considering a feature complete:
 
 ```powershell
-wm check main.wm
-wm compile main.wm C:\tmp\wmthree-check.mjs
-wm run main.wm -- 180
+wm check src/main.wm
+wm compile src/main.wm C:\tmp\wmthree-check.mjs
+wm run src/main.wm -- 180
 git diff --check
 ```
 
@@ -558,7 +639,7 @@ Current edges worth testing include:
 - C-string ergonomics
 - future bitwise operations for masks and packed flags
 
-See `WORKMAN_THREE_FFI_NOTES.md` for the detailed history and current status.
+See `docs/WORKMAN_THREE_FFI_NOTES.md` for the detailed history and current status.
 
 ## Guiding Principle
 

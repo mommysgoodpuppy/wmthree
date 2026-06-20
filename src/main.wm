@@ -20,7 +20,7 @@ from js.module("@dimforge/rapier3d-compat") import {
   KinematicCharacterController
 };
 from js.module("@dimforge/rapier3d-compat") import * as Rapier;
-from js.module("./rapier_helpers.ts") import {
+from js.module("../tools/ts/rapier_helpers.ts") import {
   bodyX,
   bodyY,
   bodyZ,
@@ -69,7 +69,7 @@ from "./game.wm" import {
 };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
-from "./kinds.wm" import { panel, strut, hull, accent, water, earth, foliage };
+from "./lib/kinds.wm" import { panel, strut, hull, accent, water, earth, foliage };
 
 let lift = Monad.lift;
 

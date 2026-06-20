@@ -4,12 +4,17 @@
     "@dimforge/rapier3d-compat": "npm:@dimforge/rapier3d-compat@^0.19.3",
     "@goodpuppies/logicalassert": "jsr:@goodpuppies/logicalassert@0.1.2",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@0.1.0",
+    "pngjs": "npm:pngjs@^7.0.0",
     "@std/assert": "jsr:@std/assert@1.0.13",
     "@types/three": "npm:@types/three@^0.184.0",
     "three": "npm:three@^0.184.0"
   },
   "tasks": {
-    "wizard": "deno run -A --unstable-webgpu src/wizard_dungeon.ts",
-    "build": "deno bundle --minify -o r3f.js r3f.tsx && deno compile -A --unstable-webgpu --include ./SDL2.dll ./r3f.js"
+    "check": "wm check src/main.wm",
+    "test:gameplay": "wm run tests/gameplay.wm",
+    "playtest:states": "wm run tests/playtest/snapshots.wm",
+    "playtest:snapshots": "deno task playtest:states && wm run tests/playtest/actual_render.wm && deno task playtest:verify",
+    "playtest:actual": "deno task playtest:snapshots",
+    "playtest:verify": "deno run --allow-read tools/ts/artifacts.ts artifacts/playtest/latest"
   }
 }

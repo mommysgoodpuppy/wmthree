@@ -15,7 +15,7 @@ The constraints remain:
 
 ## Current Application
 
-`C:\GIT\wmthree\main.wm` now does all of the following in Workman:
+`C:\GIT\wmthree\src\main.wm` now does all of the following in Workman:
 
 - loads SDL2 through reflected `Deno.dlopen`
 - obtains typed SDL symbols through `_deep_` reflection
@@ -166,7 +166,7 @@ No special Three behavior was added to the compiler.
 application is still launched with:
 
 ```sh
-wm run main.wm
+wm run src/main.wm
 ```
 
 ### 9. Direct tail recursion
@@ -216,7 +216,7 @@ available for automated checks. The engine still needs explicit frame pacing.
 ### Input follow-ups
 
 SDL keydown, keyup, and relative mouse events now become an immutable Workman input snapshot.
-WASD movement and mouse-look are pure transitions in `game.wm`. Remaining input work includes focus
+WASD movement and mouse-look are pure transitions in `src/game.wm`. Remaining input work includes focus
 changes, controller support, configurable bindings, and click actions.
 
 ### Resource cleanup
@@ -255,7 +255,7 @@ longer a demonstrated blocker, but the larger ownership shape has not yet been e
 
 ### Rapier integration status
 
-Rapier now initializes during `main.wm` startup and a kinematic capsule is stepped each frame through
+Rapier now initializes during `src/main.wm` startup and a kinematic capsule is stepped each frame through
 `KinematicCharacterController`. Static Rapier cuboids are built from the same `worldSolids()` and
 `mechSolids()` lists that render the visible boxes, plus a broad ground slab.
 
@@ -265,7 +265,7 @@ Two current boundaries are worth preserving as regression targets:
   generated module wrapper. For now, the entry module owns the runtime Rapier imports directly;
   `physics.wm` remains a checked reference boundary.
 - Rapier's `Vector` is a TypeScript interface. Direct `computedMovement().x` / `body.translation().x`
-  projection does not currently resolve as a reflected JS field. `rapier_helpers.ts` is intentionally
+  projection does not currently resolve as a reflected JS field. `tools/ts/rapier_helpers.ts` is intentionally
   narrow and only reads numeric vector components from typed Rapier handles.
 
 ### Imported record projection inside lifted callbacks
@@ -286,9 +286,9 @@ nominal Workman records should remain ordinary records when they flow through li
 Current application verification:
 
 ```sh
-wm check main.wm
-wm compile main.wm
-wm run main.wm
+wm check src/main.wm
+wm compile src/main.wm
+wm run src/main.wm
 ```
 
 Observed result:

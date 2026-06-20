@@ -4,7 +4,7 @@
 -- physics TypeScript shim. Every reflected Rapier world/body/controller call is
 -- fallible and returns a `Result<_, Js.Error>`, exactly like the Three
 -- constructors, so the setup functions compose those Results with `Monad.lift`.
--- `rapier_helpers.ts` only reads numeric fields from Rapier's structural Vector
+-- `tools/ts/rapier_helpers.ts` only reads numeric fields from Rapier's structural Vector
 -- interface because direct `Vector.x/y/z` projection is still a Workman
 -- reflection edge.
 --
@@ -27,7 +27,7 @@ from js.module("@dimforge/rapier3d-compat") import {
   Collider,
   KinematicCharacterController
 };
-from js.module("./rapier_helpers.ts") import {
+from js.module("../../tools/ts/rapier_helpers.ts") import {
   bodyX,
   bodyY,
   bodyZ,

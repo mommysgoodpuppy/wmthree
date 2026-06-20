@@ -1,0 +1,394 @@
+-- Actual rendered playtest captures.
+--
+-- Workman owns the route replay, scene construction, WebGPU render target,
+-- rendering, and readback. TypeScript only installs the headless animation
+-- shim, writes raw pixels as PNG, and patches manifest file paths.
+
+from js.module("three/webgpu") import {
+  Scene,
+  Group,
+  PerspectiveCamera,
+  OrthographicCamera,
+  BoxGeometry,
+  PlaneGeometry,
+  SphereGeometry,
+  MeshStandardMaterial,
+  Mesh,
+  Color,
+  HemisphereLight,
+  DirectionalLight,
+  PointLight
+};
+from js.module("../../tools/ts/artifacts.ts") import {
+  createActualRenderer: (Number, Number) => Task<Js.Value, Js.Error>,
+  ensureActualDir,
+  setPosition,
+  setRotation,
+  setCastReceive,
+  addChild,
+  setSceneBackground,
+  renderTargetPixels: (Js.Value, Js.Value, Js.Value, Js.Value) => Task<Js.Value, Js.Error>,
+  writeActualPngValue,
+  writeTopdownPngValue,
+  patchActualManifest
+};
+from "../../src/lib/trig.wm" import { sin, cos };
+from "../../src/game.wm" import {
+  Game,
+  initialGame,
+  beginInput,
+  setKey,
+  addMouse,
+  stepGame,
+  placePlayer,
+  placeMech,
+  playerX,
+  playerY,
+  playerZ,
+  playerYaw,
+  playerPitch,
+  mechX,
+  mechY,
+  mechZ,
+  mechYaw,
+  isPiloting,
+  isFishing,
+  hookX,
+  hookY,
+  hookZ,
+  scancodeD,
+  scancodeE,
+  scancodeW,
+  scancodeSpace
+};
+
+let lift = Monad.lift;
+let width = 640;
+let height = 480;
+let artifactDir = "artifacts/playtest/latest";
+
+record Driver = {
+  game: Game,
+  time: Number,
+  stepMs: Number
+};
+
+record ActualHandles = {
+  renderer: Js.Value,
+  target: Js.Value
+};
+
+type Action =
+  | KeyDown<Number>
+  | KeyUp<Number>
+  | TapKey<Number>
+  | MoveMouse<Number, Number>
+  | WaitFrames<Number>
+  | PlacePlayerAt<Number, Number, Number>
+  | PlaceMechAt<Number, Number, Number, Number>;
+
+let newDriver = () => {
+  .{ game = initialGame(), time = 0, stepMs = 16.6667 }
+};
+
+let withGame = (driver: Driver, game: Game) => {
+  .{ game, time = driver.time, stepMs = driver.stepMs }
+};
+
+let press = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, true))
+};
+
+let release = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, false))
+};
+
+let mouse = (driver: Driver, dx: Number, dy: Number) => {
+  withGame(driver, addMouse(driver.game, dx, dy))
+};
+
+let place = (driver: Driver, x: Number, y: Number, z: Number) => {
+  withGame(driver, placePlayer(driver.game, x, y, z))
+};
+
+let setMechPose = (driver: Driver, x: Number, y: Number, z: Number, yaw: Number) => {
+  withGame(driver, placeMech(driver.game, x, y, z, yaw))
+};
+
+let tick = (driver: Driver) => {
+  let t = driver.time + driver.stepMs;
+  let stepped = stepGame(driver.game, t);
+  .{ game = beginInput(stepped), time = t, stepMs = driver.stepMs }
+};
+
+let rec ticks = (driver: Driver, count: Number) => {
+  if (count <= 0) { driver } else { ticks(tick(driver), count - 1) }
+};
+
+let tap = (driver: Driver, scancode: Number) => {
+  release(tick(press(driver, scancode)), scancode)
+};
+
+let runAction = (driver: Driver, action: Action) => {
+  match(action) {
+    KeyDown(Var(scancode)) => { press(driver, scancode) },
+    KeyUp(Var(scancode)) => { release(driver, scancode) },
+    TapKey(Var(scancode)) => { tap(driver, scancode) },
+    MoveMouse(Var(dx), Var(dy)) => { mouse(driver, dx, dy) },
+    WaitFrames(Var(count)) => { ticks(driver, count) },
+    PlacePlayerAt(Var(x), Var(y), Var(z)) => { place(driver, x, y, z) },
+    PlaceMechAt(Var(x), Var(y), Var(z), Var(yaw)) => { setMechPose(driver, x, y, z, yaw) }
+  }
+};
+
+let rec runScript = (driver: Driver, actions: List<Action>) => {
+  match(actions) {
+    [] => { driver },
+    [Var(action), ..Var(rest)] => { runScript(runAction(driver, action), rest) }
+  }
+};
+
+let cockpitSeat = (driver: Driver) => {
+  runScript(driver, [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    MoveMouse(30, -12),
+    WaitFrames(3)
+  ])
+};
+
+let pilotAndDrive = (driver: Driver) => {
+  runScript(driver, [
+    TapKey(scancodeE),
+    KeyDown(scancodeW),
+    KeyDown(scancodeD),
+    WaitFrames(55),
+    KeyUp(scancodeD),
+    KeyUp(scancodeW)
+  ])
+};
+
+let castAtPond = (driver: Driver) => {
+  runScript(driver, [
+    PlaceMechAt(8, 0, 26.5, 0),
+    WaitFrames(1),
+    KeyDown(scancodeSpace),
+    WaitFrames(1),
+    KeyUp(scancodeSpace)
+  ])
+};
+
+let completeCast = (driver: Driver) => {
+  runScript(driver, [WaitFrames(230)])
+};
+
+let makeMaterial = (color, roughness, metalness) => {
+  MeshStandardMaterial.new(JSON{ color: color, roughness: roughness, metalness: metalness })
+};
+
+let addBox = (parent, mat, x, y, z, w, h, d) => {
+  let placeMesh = lift Result (geometry) => {
+    let addMesh = lift Result (mesh) => {
+      Result|
+        setPosition(mesh, x, y, z),
+        setCastReceive(mesh),
+        addChild(parent, mesh)
+      | :> Result.map((_) => { mesh })
+    };
+    Mesh.new(geometry, mat) :> addMesh
+  };
+  BoxGeometry.new(w, h, d) :> placeMesh
+};
+
+let addMech = (scene, mats, game: Game) => {
+  let (hull, pilotedHull, strut, panel, accent) = mats;
+  let mat = if (isPiloting(game)) { pilotedHull } else { hull };
+  let build = lift Result (group) => {
+    Result|
+      setPosition(group, mechX(game), mechY(game), mechZ(game)),
+      setRotation(group, 0, mechYaw(game), 0),
+      addBox(group, mat, 0, 3.1, 0, 10.5, 6.2, 13),
+      addBox(group, panel, 0, 6.7, -7.8, 5.5, 2.4, 3.2),
+      addBox(group, accent, 0, 6.85, -9.35, 3.7, 0.45, 0.24),
+      addBox(group, strut, -6.3, 3.8, -1.2, 2.2, 3.1, 5.0),
+      addBox(group, strut, 6.3, 3.8, -1.2, 2.2, 3.1, 5.0),
+      addBox(group, strut, -3.3, -1.0, 3.8, 2.4, 2.0, 4.8),
+      addBox(group, strut, 3.3, -1.0, 3.8, 2.4, 2.0, 4.8),
+      addBox(group, strut, 0, 5.7, -12.2, 0.45, 0.45, 3.0),
+      addBox(group, strut, 0, 5.25, -14.0, 0.28, 1.1, 0.28),
+      addBox(group, accent, 0, 4.6, -14.0, 0.8, 0.18, 0.18),
+      addChild(scene, group)
+    | :> Result.map((_) => { void })
+  };
+  Group.new() :> build
+};
+
+let addHook = (scene, hookMat, game: Game) => {
+  if (isFishing(game)) {
+    let placeHook = lift Result (sphereGeo, lineGeo) => {
+      let placeMeshes = lift Result (hook, line) => {
+        Result|
+          setPosition(hook, hookX(game), hookY(game), hookZ(game)),
+          setPosition(line, hookX(game), hookY(game) + 1.1, hookZ(game)),
+          setCastReceive(hook),
+          setCastReceive(line),
+          addChild(scene, hook),
+          addChild(scene, line)
+        | :> Result.map((_) => { void })
+      };
+      Result|
+        Mesh.new(sphereGeo, hookMat),
+        Mesh.new(lineGeo, hookMat)
+      | :> placeMeshes
+    };
+    Result|
+      SphereGeometry.new(0.35, 16, 8),
+      BoxGeometry.new(0.04, 2.2, 0.04)
+    | :> placeHook
+  } else {
+    Ok(void)
+  }
+};
+
+let buildScene = (game: Game) => {
+  let create = lift Result (scene, camera, topCamera) => {
+    let finish = lift Result (
+      floorMat,
+      waterMat,
+      earthMat,
+      crateMat,
+      foliageMat,
+      hullMat,
+      pilotedHullMat,
+      strutMat,
+      panelMat,
+      accentMat,
+      hookMat,
+      floorGeo,
+      waterGeo,
+      hemi,
+      key,
+      fill
+    ) => {
+      let floor = lift Result (floorMesh, waterMesh, skyColor) => {
+        let mechMats = (hullMat, pilotedHullMat, strutMat, panelMat, accentMat);
+        Result|
+          setSceneBackground(scene, skyColor),
+          setRotation(floorMesh, 0 - 1.57079632679, 0, 0),
+          setRotation(waterMesh, 0 - 1.57079632679, 0, 0),
+          setPosition(waterMesh, 8, 0.035, 8),
+          addChild(scene, floorMesh),
+          addChild(scene, waterMesh),
+          addBox(scene, earthMat, 8, 0.1, 3.8, 10.5, 0.2, 0.7),
+          addBox(scene, earthMat, 8, 0.1, 12.2, 10.5, 0.2, 0.7),
+          addBox(scene, earthMat, 2.9, 0.1, 8, 0.7, 0.2, 7.0),
+          addBox(scene, earthMat, 13.1, 0.1, 8, 0.7, 0.2, 7.0),
+          addBox(scene, crateMat, 8, 0.16, 4.7, 2.2, 0.32, 3.4),
+          addBox(scene, foliageMat, 12.3, 0.45, 2.0, 1.7, 0.5, 0.75),
+          addMech(scene, mechMats, game),
+          addHook(scene, hookMat, game),
+          addChild(scene, hemi),
+          setPosition(key, 6, 12, 4),
+          setCastReceive(key),
+          addChild(scene, key),
+          setPosition(fill, 0, 3, -8),
+          addChild(scene, fill),
+          setPosition(camera, playerX(game), playerY(game) + 1.4, playerZ(game)),
+          camera.lookAt(
+            playerX(game) + sin(playerYaw(game)) * cos(playerPitch(game)),
+            playerY(game) + 1.4 + sin(playerPitch(game)),
+            playerZ(game) - cos(playerYaw(game)) * cos(playerPitch(game))
+          ),
+          setPosition(topCamera, 0, 60, 4),
+          topCamera.lookAt(0, 0, 4)
+        | :> Result.map((_) => { (scene, camera, topCamera, accentMat) })
+      };
+      Result|
+        Mesh.new(floorGeo, floorMat),
+        Mesh.new(waterGeo, waterMat),
+        Color.new(5997224)
+      | :> floor
+    };
+    Result|
+      makeMaterial(2967599, 0.95, 0),
+      makeMaterial(3108514, 0.45, 0),
+      makeMaterial(6903867, 0.9, 0),
+      makeMaterial(9072711, 0.85, 0),
+      makeMaterial(2849336, 0.8, 0),
+      makeMaterial(7041664, 0.55, 0.35),
+      makeMaterial(12027701, 0.5, 0.35),
+      makeMaterial(3941970, 0.5, 0.5),
+      makeMaterial(10201016, 0.6, 0.2),
+      makeMaterial(14064431, 0.4, 0.3),
+      makeMaterial(6342822, 0.35, 0.1),
+      PlaneGeometry.new(80, 80),
+      PlaneGeometry.new(9.5, 7.0),
+      HemisphereLight.new(12573951, 2107424, 1.4),
+      DirectionalLight.new(16777215, 2.4),
+      PointLight.new(16755285, 50, 22, 2)
+    | :> finish
+  };
+  Result|
+    Scene.new(),
+    PerspectiveCamera.new(75, width / height, 0.1, 1000),
+    OrthographicCamera.new(0 - 32, 32, 24, 0 - 24, 0.1, 200)
+  | :> create
+};
+
+let renderCapture = (renderer, target, id: String, game: Game) => {
+  let render = lift Task (scene, camera, topCamera, markerMat) => {
+    let renderTopdown = lift Task (_) => {
+      addBox(scene, markerMat, playerX(game), 10, playerZ(game), 0.8, 0.4, 0.8)
+        :> Task.fromResult
+        :> Task.andThen((_) => { renderTargetPixels(renderer, target, scene, topCamera) })
+        :> Task.andThen((pixels) => {
+          writeTopdownPngValue(artifactDir, id, pixels) :> Task.fromResult
+        })
+    };
+    renderTargetPixels(renderer, target, scene, camera)
+      :> Task.andThen((pixels) => {
+        writeActualPngValue(artifactDir, id, pixels) :> Task.fromResult
+      })
+      :> renderTopdown
+  };
+  buildScene(game) :> Task.fromResult :> render
+};
+
+let runActualCaptures = (renderer, target) => {
+  let start = runScript(newDriver(), [WaitFrames(3)]);
+  let cockpit = cockpitSeat(start);
+  let driving = pilotAndDrive(cockpit);
+  let cast = castAtPond(driving);
+  let finished = completeCast(cast);
+
+  Task.collectList([
+    renderCapture(renderer, target, "00-spawn", start.game),
+    renderCapture(renderer, target, "01-cockpit-seat", cockpit.game),
+    renderCapture(renderer, target, "02-mech-drive", driving.game),
+    renderCapture(renderer, target, "03-cast-active", cast.game),
+    renderCapture(renderer, target, "04-catch-result", finished.game)
+  ])
+};
+
+let main = () => {
+  let assertHandles = lift Task (raw) => {
+    let handles: Result<ActualHandles, Js.Error> = raw :> Json.assert;
+    handles :> Task.fromResult
+  };
+  let startActual = lift Task (handles: ActualHandles) => {
+      let renderer = handles.renderer;
+      let target = handles.target;
+      let patchAfterCapture = lift Task (_) => {
+        patchActualManifest(artifactDir) :> Task.fromResult
+      };
+      runActualCaptures(renderer, target) :> patchAfterCapture
+  };
+  let pipeline = ensureActualDir(artifactDir)
+    :> Task.fromResult
+    :> Task.andThen((_) => { createActualRenderer(width, height) })
+    :> assertHandles
+    :> startActual;
+
+  pipeline
+    :> Task.map((_) => { print("actual rendered playtest views written by Workman") })
+    :> Task.recover((_) => { print("actual rendered playtest views failed") })
+};

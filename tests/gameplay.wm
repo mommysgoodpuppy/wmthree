@@ -1,0 +1,415 @@
+-- Deterministic gameplay tests for the pure Workman core.
+--
+-- This is intentionally a small programmable harness rather than a pile of
+-- one-off checks. Scenarios drive the same input and state-transition functions
+-- used by src/main.wm, so they can cover gameplay without SDL, WebGPU, or Rapier.
+
+from "../src/game.wm" import {
+  Game,
+  initialGame,
+  beginInput,
+  setKey,
+  addMouse,
+  stepGame,
+  placePlayer,
+  placeMech,
+  playerX,
+  playerY,
+  playerZ,
+  playerVy,
+  playerYaw,
+  playerPitch,
+  frameNumber,
+  mechX,
+  mechZ,
+  mechYaw,
+  isPiloting,
+  isFishing,
+  fishCaught,
+  shouldQuit,
+  hookX,
+  hookZ,
+  scancodeA,
+  scancodeD,
+  scancodeE,
+  scancodeS,
+  scancodeW,
+  scancodeSpace,
+  scancodeEscape
+};
+
+record Driver = {
+  game: Game,
+  time: Number,
+  stepMs: Number
+};
+
+record Suite = {
+  passed: Number,
+  failed: Number
+};
+
+type TestResult = Pass | Fail<String>;
+type Action =
+  | KeyDown<Number>
+  | KeyUp<Number>
+  | TapKey<Number>
+  | MoveMouse<Number, Number>
+  | WaitFrames<Number>
+  | PlacePlayerAt<Number, Number, Number>
+  | PlaceMechAt<Number, Number, Number, Number>
+  | SetClock<Number>;
+
+let newDriver = () => {
+  .{ game = initialGame(), time = 0, stepMs = 16.6667 }
+};
+
+let withGame = (driver: Driver, game: Game) => {
+  .{ game, time = driver.time, stepMs = driver.stepMs }
+};
+
+let withTime = (driver: Driver, time: Number) => {
+  .{ game = driver.game, time, stepMs = driver.stepMs }
+};
+
+let place = (driver: Driver, x: Number, y: Number, z: Number) => {
+  withGame(driver, placePlayer(driver.game, x, y, z))
+};
+
+let setMechPose = (driver: Driver, x: Number, y: Number, z: Number, yaw: Number) => {
+  withGame(driver, placeMech(driver.game, x, y, z, yaw))
+};
+
+let press = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, true))
+};
+
+let release = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, false))
+};
+
+let mouse = (driver: Driver, dx: Number, dy: Number) => {
+  withGame(driver, addMouse(driver.game, dx, dy))
+};
+
+let tick = (driver: Driver) => {
+  let t = driver.time + driver.stepMs;
+  let stepped = stepGame(driver.game, t);
+  .{ game = beginInput(stepped), time = t, stepMs = driver.stepMs }
+};
+
+let rec ticks = (driver: Driver, count: Number) => {
+  if (count <= 0) {
+    driver
+  } else {
+    ticks(tick(driver), count - 1)
+  }
+};
+
+let tap = (driver: Driver, scancode: Number) => {
+  release(tick(press(driver, scancode)), scancode)
+};
+
+let runAction = (driver: Driver, action: Action) => {
+  match(action) {
+    KeyDown(Var(scancode)) => { press(driver, scancode) },
+    KeyUp(Var(scancode)) => { release(driver, scancode) },
+    TapKey(Var(scancode)) => { tap(driver, scancode) },
+    MoveMouse(Var(dx), Var(dy)) => { mouse(driver, dx, dy) },
+    WaitFrames(Var(count)) => { ticks(driver, count) },
+    PlacePlayerAt(Var(x), Var(y), Var(z)) => { place(driver, x, y, z) },
+    PlaceMechAt(Var(x), Var(y), Var(z), Var(yaw)) => { setMechPose(driver, x, y, z, yaw) },
+    SetClock(Var(time)) => { withTime(driver, time) }
+  }
+};
+
+let rec runScript = (driver: Driver, actions: List<Action>) => {
+  match(actions) {
+    [] => { driver },
+    [Var(action), ..Var(rest)] => { runScript(runAction(driver, action), rest) }
+  }
+};
+
+let abs = (value: Number) => {
+  if (value < 0) { 0 - value } else { value }
+};
+
+let near = (actual: Number, expected: Number, epsilon: Number) => {
+  abs(actual - expected) <= epsilon
+};
+
+let ok = (condition: Bool, label: String) => {
+  if (condition) { Pass } else { Fail(label) }
+};
+
+let andThen = (result: TestResult, next) => {
+  match(result) {
+    Pass => { next() },
+    Fail(Var(label)) => { Fail(label) }
+  }
+};
+
+let assertTrue = (value: Bool, label: String) => {
+  ok(value, label)
+};
+
+let assertFalse = (value: Bool, label: String) => {
+  ok(!value, label)
+};
+
+let assertNear = (actual: Number, expected: Number, epsilon: Number, label: String) => {
+  ok(near(actual, expected, epsilon), label)
+};
+
+let assertGreater = (actual: Number, expected: Number, label: String) => {
+  ok(actual > expected, label)
+};
+
+let assertLess = (actual: Number, expected: Number, label: String) => {
+  ok(actual < expected, label)
+};
+
+let assertAtLeast = (actual: Number, expected: Number, label: String) => {
+  ok(actual >= expected, label)
+};
+
+let rec assertFiniteGame = (driver: Driver, frames: Number) => {
+  if (frames <= 0) {
+    Pass
+  } else {
+    let d = tick(driver);
+    andThen(assertNear(playerX(d.game), playerX(d.game), 0, "player x became NaN"), () => {
+      andThen(assertNear(playerY(d.game), playerY(d.game), 0, "player y became NaN"), () => {
+        andThen(assertNear(playerZ(d.game), playerZ(d.game), 0, "player z became NaN"), () => {
+          andThen(assertNear(mechX(d.game), mechX(d.game), 0, "mech x became NaN"), () => {
+            andThen(assertNear(mechZ(d.game), mechZ(d.game), 0, "mech z became NaN"), () => {
+              assertFiniteGame(d, frames - 1)
+            })
+          })
+        })
+      })
+    })
+  }
+};
+
+let spawnAtPilotSeat = (driver: Driver) => {
+  -- The parked mech starts at (0, 0, -8) yaw 0. The pilot feet marker is
+  -- authored in mech-local space at (0, 3.6, -7.4).
+  place(driver, 0, 3.6, 0 - 15.4)
+};
+
+let settle = (driver: Driver) => {
+  ticks(tick(driver), 2)
+};
+
+let testForwardMovement = () => {
+  let d0 = runScript(newDriver(), [WaitFrames(3)]);
+  let z0 = playerZ(d0.game);
+  let d1 = runScript(d0, [KeyDown(scancodeW), WaitFrames(40), KeyUp(scancodeW)]);
+  andThen(assertLess(playerZ(d1.game), z0 - 1.0, "holding W should move the player forward"), () => {
+    assertAtLeast(frameNumber(d1.game), frameNumber(d0.game) + 40, "forward scenario should advance frames")
+  })
+};
+
+let testStrafeAndBackwardMovement = () => {
+  let d0 = runScript(newDriver(), [WaitFrames(3)]);
+  let x0 = playerX(d0.game);
+  let z0 = playerZ(d0.game);
+  let d1 = runScript(d0, [KeyDown(scancodeA), WaitFrames(30), KeyUp(scancodeA)]);
+  let d2 = runScript(d1, [KeyDown(scancodeS), WaitFrames(30), KeyUp(scancodeS)]);
+  andThen(assertLess(playerX(d1.game), x0 - 0.75, "holding A should strafe left at yaw zero"), () => {
+    assertGreater(playerZ(d2.game), z0 + 0.75, "holding S should move backward at yaw zero")
+  })
+};
+
+let testMouseLookClamp = () => {
+  let d0 = settle(newDriver());
+  let d1 = tick(mouse(d0, 100, 2000));
+  let d2 = tick(mouse(d1, 0, -4000));
+  andThen(assertGreater(playerYaw(d1.game), playerYaw(d0.game), "mouse dx should increase yaw"), () => {
+    andThen(assertNear(playerPitch(d1.game), -1.45, 0.0001, "large downward mouse input should clamp pitch low"), () => {
+      assertNear(playerPitch(d2.game), 1.45, 0.0001, "large upward mouse input should clamp pitch high")
+    })
+  })
+};
+
+let testJumpArc = () => {
+  let d0 = settle(newDriver());
+  let y0 = playerY(d0.game);
+  let d1 = tick(press(d0, scancodeSpace));
+  let d2 = ticks(release(d1, scancodeSpace), 12);
+  let d3 = ticks(d2, 80);
+  andThen(assertGreater(playerVy(d1.game), 0, "jump should create upward velocity"), () => {
+    andThen(assertGreater(playerY(d2.game), y0 + 0.25, "jump should lift the player"), () => {
+      assertNear(playerY(d3.game), y0, 0.05, "jump should land back on the floor")
+    })
+  })
+};
+
+let testCockpitToggle = () => {
+  let d0 = runScript(newDriver(), [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    WaitFrames(3)
+  ]);
+  let d1 = runScript(d0, [TapKey(scancodeE)]);
+  let d2 = runScript(d1, [TapKey(scancodeE)]);
+  andThen(assertTrue(isPiloting(d1.game), "E at the cockpit should enter pilot mode"), () => {
+    assertFalse(isPiloting(d2.game), "E while piloting should exit pilot mode")
+  })
+};
+
+let testMechDriveAndTurn = () => {
+  let d0 = tap(settle(spawnAtPilotSeat(newDriver())), scancodeE);
+  let yaw0 = mechYaw(d0.game);
+  let z0 = mechZ(d0.game);
+  let d1 = ticks(press(press(d0, scancodeW), scancodeD), 80);
+  andThen(assertTrue(isPiloting(d1.game), "drive scenario should remain in pilot mode"), () => {
+    andThen(assertGreater(mechYaw(d1.game), yaw0 + 0.8, "holding D in the cockpit should turn the mech"), () => {
+      assertLess(mechZ(d1.game), z0 - 1.0, "holding W in the cockpit should drive the mech forward")
+    })
+  })
+};
+
+let testFishingCatch = () => {
+  let piloting = runScript(newDriver(), [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    WaitFrames(3),
+    TapKey(scancodeE)
+  ]);
+  -- Put the mech in a deterministic casting pose: hookWorld is local
+  -- (0, 1.25, -18.5), so this places the hook at pond center (8, 8).
+  let d0 = runScript(piloting, [PlaceMechAt(8, 0, 26.5, 0), WaitFrames(1)]);
+  let d1 = runScript(d0, [KeyDown(scancodeSpace), WaitFrames(1)]);
+  let d2 = release(d1, scancodeSpace);
+  let d3 = ticks(d2, 230);
+  andThen(assertTrue(isFishing(d1.game), "space in the cockpit should start fishing"), () => {
+    andThen(assertGreater(hookX(d1.game), 3.25, "hook should be positioned in pond x bounds"), () => {
+      andThen(assertGreater(hookZ(d1.game), 4.5, "hook should be positioned in pond z bounds"), () => {
+        andThen(assertFalse(isFishing(d3.game), "fishing should finish after the cast timer"), () => {
+          assertAtLeast(fishCaught(d3.game), 1, "finished pond cast should increment catches")
+        })
+      })
+    })
+  })
+};
+
+let testFishingMissDoesNotCatch = () => {
+  let d0 = runScript(newDriver(), [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    WaitFrames(3),
+    TapKey(scancodeE),
+    PlaceMechAt(0, 0, -8, 0),
+    WaitFrames(1),
+    KeyDown(scancodeSpace),
+    WaitFrames(1),
+    KeyUp(scancodeSpace),
+    WaitFrames(230)
+  ]);
+  andThen(assertFalse(isFishing(d0.game), "missed fishing cast should finish"), () => {
+    assertNear(fishCaught(d0.game), 0, 0.0001, "missed cast should not increment catches")
+  })
+};
+
+let testSpaceOutsideCockpitDoesNotFish = () => {
+  let d0 = runScript(newDriver(), [
+    WaitFrames(3),
+    KeyDown(scancodeSpace),
+    WaitFrames(1),
+    KeyUp(scancodeSpace),
+    WaitFrames(30)
+  ]);
+  andThen(assertFalse(isPiloting(d0.game), "space outside cockpit should not enter pilot mode"), () => {
+    andThen(assertFalse(isFishing(d0.game), "space outside cockpit should not start fishing"), () => {
+      assertNear(fishCaught(d0.game), 0, 0.0001, "space outside cockpit should not catch fish")
+    })
+  })
+};
+
+let testFrameDeltaClamp = () => {
+  let d0 = runScript(newDriver(), [WaitFrames(3)]);
+  let z0 = playerZ(d0.game);
+  let d1 = runScript(d0, [
+    KeyDown(scancodeW),
+    SetClock(d0.time + 5000),
+    WaitFrames(1)
+  ]);
+  let moved = z0 - playerZ(d1.game);
+  andThen(assertGreater(moved, 0.1, "large clock gap should still advance one clamped step"), () => {
+    assertLess(moved, 0.25, "large clock gap should be clamped instead of teleporting")
+  })
+};
+
+let testScriptedMissionFlow = () => {
+  let d0 = runScript(newDriver(), [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    WaitFrames(3),
+    TapKey(scancodeE),
+    KeyDown(scancodeW),
+    KeyDown(scancodeD),
+    WaitFrames(45),
+    KeyUp(scancodeD),
+    KeyUp(scancodeW),
+    PlaceMechAt(8, 0, 26.5, 0),
+    WaitFrames(1),
+    KeyDown(scancodeSpace),
+    WaitFrames(1),
+    KeyUp(scancodeSpace),
+    WaitFrames(230)
+  ]);
+  andThen(assertTrue(isPiloting(d0.game), "scripted mission should stay in the cockpit"), () => {
+    andThen(assertFalse(isFishing(d0.game), "scripted mission fishing should finish"), () => {
+      assertAtLeast(fishCaught(d0.game), 1, "scripted mission should catch at least one fish")
+    })
+  })
+};
+
+let testQuitInput = () => {
+  let d0 = settle(newDriver());
+  let d1 = press(d0, scancodeEscape);
+  assertTrue(shouldQuit(d1.game), "escape should latch quit")
+};
+
+let testLongRunInvariants = () => {
+  let walking = press(press(mouse(settle(newDriver()), 35, -18), scancodeW), scancodeA);
+  assertFiniteGame(walking, 240)
+};
+
+let runOne = (name: String, result: TestResult, suite: Suite) => {
+  match(result) {
+    Pass => {
+      print("PASS " ++ name);
+      .{ passed = suite.passed + 1, failed = suite.failed }
+    },
+    Fail(Var(label)) => {
+      print("FAIL " ++ name ++ ": " ++ label);
+      .{ passed = suite.passed, failed = suite.failed + 1 }
+    }
+  }
+};
+
+let runSuite = () => {
+  let s0 = .{ passed = 0, failed = 0 };
+  let s1 = runOne("forward movement", testForwardMovement(), s0);
+  let s2 = runOne("strafe and backward movement", testStrafeAndBackwardMovement(), s1);
+  let s3 = runOne("mouse look clamp", testMouseLookClamp(), s2);
+  let s4 = runOne("jump arc", testJumpArc(), s3);
+  let s5 = runOne("cockpit toggle", testCockpitToggle(), s4);
+  let s6 = runOne("mech drive and turn", testMechDriveAndTurn(), s5);
+  let s7 = runOne("fishing catch", testFishingCatch(), s6);
+  let s8 = runOne("fishing miss does not catch", testFishingMissDoesNotCatch(), s7);
+  let s9 = runOne("space outside cockpit does not fish", testSpaceOutsideCockpitDoesNotFish(), s8);
+  let s10 = runOne("frame delta clamp", testFrameDeltaClamp(), s9);
+  let s11 = runOne("scripted mission flow", testScriptedMissionFlow(), s10);
+  let s12 = runOne("quit input", testQuitInput(), s11);
+  let s13 = runOne("long-run invariants", testLongRunInvariants(), s12);
+  s13
+};
+
+let main = () => {
+  let suite = runSuite();
+  if (suite.failed == 0) {
+    print("gameplay tests passed")
+  } else {
+    Panic("gameplay tests failed")
+  }
+};

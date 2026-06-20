@@ -8,12 +8,12 @@
 -- mech's "face") = -Z. The rear world entrance is at local z = 12 so the
 -- current exterior spawn lines up with the open cargo ramp.
 
-from "../build.wm" import {
+from "../lib/build.wm" import {
   Node, box, at, group,
   wallX, wallZ, doorwayX, stairsZ,
   solids as assemble
 };
-from "../kinds.wm" import { panel, strut, hull, crate, accent };
+from "../lib/kinds.wm" import { panel, strut, hull, crate, accent };
 
 let wallH = 2.7;
 let wallT = 0.25;

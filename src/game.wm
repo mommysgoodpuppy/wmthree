@@ -1,5 +1,5 @@
-from "./trig.wm" import { sin, cos };
-from "./space.wm" import { toLocal, toWorld };
+from "./lib/trig.wm" import { sin, cos };
+from "./lib/space.wm" import { toLocal, toWorld };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
 
@@ -196,7 +196,7 @@ let inRange = (value, low, high) => {
 
 -- Movement. The pure core owns input timing, look, jump intent, and a ground
 -- estimate for vertical motion. Rapier owns horizontal wall/obstacle response
--- in main.wm from the same level solids used for rendering.
+-- in src/main.wm from the same level solids used for rendering.
 let playerRadius = 0.35;
 let eyeHeight = 1.4;      -- camera height above the feet
 let stepHeight = 0.55;    -- tallest ledge that is climbed rather than blocked
@@ -349,7 +349,13 @@ let lookZ = (game: Game) => { game.z - cos(game.yaw) * cos(game.pitch) };
 let cameraX = (game: Game) => { game.x };
 let cameraY = (game: Game) => { game.y + eyeHeight };
 let cameraZ = (game: Game) => { game.z };
+let playerX = (game: Game) => { game.x };
 let playerY = (game: Game) => { game.y };
+let playerZ = (game: Game) => { game.z };
+let playerVy = (game: Game) => { game.vy };
+let playerYaw = (game: Game) => { game.yaw };
+let playerPitch = (game: Game) => { game.pitch };
+let frameNumber = (game: Game) => { game.frame };
 let shouldQuit = (game: Game) => { game.controls.quit };
 let mechX = (game: Game) => { game.mech.x };
 let mechY = (game: Game) => { game.mech.y };
@@ -374,6 +380,23 @@ let placePlayer = (game: Game, x: Number, y: Number, z: Number) => {
     last = game.last,
     controls = game.controls,
     mech = game.mech,
+    fishing = game.fishing,
+    piloting = game.piloting
+  }
+};
+
+let placeMech = (game: Game, x: Number, y: Number, z: Number, yaw: Number) => {
+  .{
+    x = game.x,
+    y = game.y,
+    z = game.z,
+    vy = game.vy,
+    yaw = game.yaw,
+    pitch = game.pitch,
+    frame = game.frame,
+    last = game.last,
+    controls = game.controls,
+    mech = .{ x, y, z, yaw },
     fishing = game.fishing,
     piloting = game.piloting
   }

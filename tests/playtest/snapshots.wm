@@ -1,0 +1,221 @@
+-- Scripted playtest capture run.
+--
+-- This entrypoint drives the pure game core and writes the capture manifest and
+-- per-capture JSON state. The companion render driver turns those captures into
+-- perspective and orthographic Three/WebGPU images.
+
+from js.module("../../tools/ts/artifacts.ts") import {
+  resetArtifacts,
+  captureSnapshot,
+  writeManifest
+};
+from "../../src/game.wm" import {
+  Game,
+  initialGame,
+  beginInput,
+  setKey,
+  addMouse,
+  stepGame,
+  placePlayer,
+  placeMech,
+  playerX,
+  playerY,
+  playerZ,
+  playerVy,
+  playerYaw,
+  playerPitch,
+  frameNumber,
+  mechX,
+  mechY,
+  mechZ,
+  mechYaw,
+  isPiloting,
+  isFishing,
+  fishCaught,
+  hookX,
+  hookY,
+  hookZ,
+  scancodeD,
+  scancodeE,
+  scancodeW,
+  scancodeSpace
+};
+
+record Driver = {
+  game: Game,
+  time: Number,
+  stepMs: Number
+};
+
+type Action =
+  | KeyDown<Number>
+  | KeyUp<Number>
+  | TapKey<Number>
+  | MoveMouse<Number, Number>
+  | WaitFrames<Number>
+  | PlacePlayerAt<Number, Number, Number>
+  | PlaceMechAt<Number, Number, Number, Number>;
+
+let artifactDir = "artifacts/playtest/latest";
+
+let newDriver = () => {
+  .{ game = initialGame(), time = 0, stepMs = 16.6667 }
+};
+
+let withGame = (driver: Driver, game: Game) => {
+  .{ game, time = driver.time, stepMs = driver.stepMs }
+};
+
+let press = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, true))
+};
+
+let release = (driver: Driver, scancode: Number) => {
+  withGame(driver, setKey(driver.game, scancode, false))
+};
+
+let mouse = (driver: Driver, dx: Number, dy: Number) => {
+  withGame(driver, addMouse(driver.game, dx, dy))
+};
+
+let place = (driver: Driver, x: Number, y: Number, z: Number) => {
+  withGame(driver, placePlayer(driver.game, x, y, z))
+};
+
+let setMechPose = (driver: Driver, x: Number, y: Number, z: Number, yaw: Number) => {
+  withGame(driver, placeMech(driver.game, x, y, z, yaw))
+};
+
+let tick = (driver: Driver) => {
+  let t = driver.time + driver.stepMs;
+  let stepped = stepGame(driver.game, t);
+  .{ game = beginInput(stepped), time = t, stepMs = driver.stepMs }
+};
+
+let rec ticks = (driver: Driver, count: Number) => {
+  if (count <= 0) {
+    driver
+  } else {
+    ticks(tick(driver), count - 1)
+  }
+};
+
+let tap = (driver: Driver, scancode: Number) => {
+  release(tick(press(driver, scancode)), scancode)
+};
+
+let runAction = (driver: Driver, action: Action) => {
+  match(action) {
+    KeyDown(Var(scancode)) => { press(driver, scancode) },
+    KeyUp(Var(scancode)) => { release(driver, scancode) },
+    TapKey(Var(scancode)) => { tap(driver, scancode) },
+    MoveMouse(Var(dx), Var(dy)) => { mouse(driver, dx, dy) },
+    WaitFrames(Var(count)) => { ticks(driver, count) },
+    PlacePlayerAt(Var(x), Var(y), Var(z)) => { place(driver, x, y, z) },
+    PlaceMechAt(Var(x), Var(y), Var(z), Var(yaw)) => { setMechPose(driver, x, y, z, yaw) }
+  }
+};
+
+let rec runScript = (driver: Driver, actions: List<Action>) => {
+  match(actions) {
+    [] => { driver },
+    [Var(action), ..Var(rest)] => { runScript(runAction(driver, action), rest) }
+  }
+};
+
+let capture = (driver: Driver, id: String, title: String, note: String) => {
+  captureSnapshot(
+    artifactDir,
+    id,
+    title,
+    note,
+    frameNumber(driver.game),
+    driver.time,
+    playerX(driver.game),
+    playerY(driver.game),
+    playerZ(driver.game),
+    playerVy(driver.game),
+    playerYaw(driver.game),
+    playerPitch(driver.game),
+    mechX(driver.game),
+    mechY(driver.game),
+    mechZ(driver.game),
+    mechYaw(driver.game),
+    isPiloting(driver.game),
+    isFishing(driver.game),
+    fishCaught(driver.game),
+    hookX(driver.game),
+    hookY(driver.game),
+    hookZ(driver.game)
+  )
+};
+
+let cockpitSeat = (driver: Driver) => {
+  runScript(driver, [
+    PlacePlayerAt(0, 3.6, 0 - 15.4),
+    MoveMouse(30, -12),
+    WaitFrames(3)
+  ])
+};
+
+let pilotAndDrive = (driver: Driver) => {
+  runScript(driver, [
+    TapKey(scancodeE),
+    KeyDown(scancodeW),
+    KeyDown(scancodeD),
+    WaitFrames(55),
+    KeyUp(scancodeD),
+    KeyUp(scancodeW)
+  ])
+};
+
+let castAtPond = (driver: Driver) => {
+  runScript(driver, [
+    PlaceMechAt(8, 0, 26.5, 0),
+    WaitFrames(1),
+    KeyDown(scancodeSpace),
+    WaitFrames(1),
+    KeyUp(scancodeSpace)
+  ])
+};
+
+let completeCast = (driver: Driver) => {
+  runScript(driver, [
+    WaitFrames(230)
+  ])
+};
+
+let runPlaytest = () => {
+  resetArtifacts(artifactDir);
+
+  let start = runScript(newDriver(), [
+    WaitFrames(3)
+  ]);
+  capture(start, "00-spawn", "Spawn", "Initial on-foot spawn near the parked mech.");
+
+  let cockpit = cockpitSeat(start);
+  capture(cockpit, "01-cockpit-seat", "Cockpit Seat", "Player is placed at the cockpit interaction point before pressing E.");
+
+  let driving = pilotAndDrive(cockpit);
+  capture(driving, "02-mech-drive", "Mech Drive", "Pilot mode after a short forward-right drive input.");
+
+  let cast = castAtPond(driving);
+  capture(cast, "03-cast-active", "Cast Active", "Mech is positioned for a pond cast; hook should be active and visible.");
+
+  let finished = completeCast(cast);
+  capture(finished, "04-catch-result", "Catch Result", "Fishing timer has elapsed; catch count should be updated.");
+
+  writeManifest(
+    artifactDir,
+    "scripted pond fishing playtest",
+    "Programmatic playtest route covering spawn, cockpit entry, mech driving, active cast, and catch resolution."
+  )
+};
+
+let main = () => {
+  let manifest = runPlaytest();
+  match(manifest) {
+    Ok(Var(path)) => { print("playtest snapshots written: " ++ path) },
+    Err(_) => { Panic("playtest snapshot generation failed") }
+  }
+};
