@@ -1,5 +1,5 @@
 from "./trig.wm" import { sin, cos };
-from "./space.wm" import { toLocal };
+from "./space.wm" import { toLocal, toWorld };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
 
@@ -10,6 +10,12 @@ record Mech = {
   yaw: Number
 };
 
+record Fishing = {
+  active: Bool,
+  timer: Number,
+  caught: Number
+};
+
 record Controls = {
   forward: Bool,
   backward: Bool,
@@ -17,6 +23,8 @@ record Controls = {
   right: Bool,
   mouseX: Number,
   mouseY: Number,
+  use: Bool,
+  cast: Bool,
   jump: Bool,
   quit: Bool
 };
@@ -31,11 +39,14 @@ record Game = {
   frame: Number,
   last: Number,
   controls: Controls,
-  mech: Mech
+  mech: Mech,
+  fishing: Fishing,
+  piloting: Bool
 };
 
 let scancodeA = 4;
 let scancodeD = 7;
+let scancodeE = 8;
 let scancodeS = 22;
 let scancodeW = 26;
 let scancodeSpace = 44;
@@ -49,6 +60,8 @@ let initialControls = () => {
     right = false,
     mouseX = 0,
     mouseY = 0,
+    use = false,
+    cast = false,
     jump = false,
     quit = false
   }
@@ -66,7 +79,9 @@ let initialGame = () => {
     frame = 0,
     last = 0,
     controls = initialControls(),
-    mech = .{ x = mpx, y = mpy, z = mpz, yaw = mpyaw }
+    mech = .{ x = mpx, y = mpy, z = mpz, yaw = mpyaw },
+    fishing = .{ active = false, timer = 0, caught = 0 },
+    piloting = false
   }
 };
 
@@ -81,11 +96,13 @@ let withControls = (game: Game, controls: Controls) => {
     frame = game.frame,
     last = game.last,
     controls,
-    mech = game.mech
+    mech = game.mech,
+    fishing = game.fishing,
+    piloting = game.piloting
   }
 };
 
-let controlsWithMouse = (controls: Controls, mouseX: Number, mouseY: Number) => {
+let controlsWithTransient = (controls: Controls, mouseX: Number, mouseY: Number, use: Bool, cast: Bool) => {
   .{
     forward = controls.forward,
     backward = controls.backward,
@@ -93,6 +110,8 @@ let controlsWithMouse = (controls: Controls, mouseX: Number, mouseY: Number) => 
     right = controls.right,
     mouseX,
     mouseY,
+    use,
+    cast,
     jump = controls.jump,
     quit = controls.quit
   }
@@ -104,43 +123,49 @@ let controlsWithKey = (
   backward: Bool,
   left: Bool,
   right: Bool,
+  use: Bool,
+  cast: Bool,
   jump: Bool,
   quit: Bool
 ) => {
-  .{ forward, backward, left, right, mouseX = controls.mouseX, mouseY = controls.mouseY, jump, quit }
+  .{ forward, backward, left, right, mouseX = controls.mouseX, mouseY = controls.mouseY, use, cast, jump, quit }
 };
 
 let beginInput = (game: Game) => {
-  withControls(game, controlsWithMouse(game.controls, 0, 0))
+  withControls(game, controlsWithTransient(game.controls, 0, 0, false, false))
 };
 
 let setQuit = (game: Game) => {
   let c = game.controls;
-  withControls(game, controlsWithKey(c, c.forward, c.backward, c.left, c.right, c.jump, true))
+  withControls(game, controlsWithKey(c, c.forward, c.backward, c.left, c.right, c.use, c.cast, c.jump, true))
 };
 
 let setKey = (game: Game, scancode: Number, down: Bool) => {
   let c = game.controls;
   let controls =
     if (scancode == scancodeW) {
-      controlsWithKey(c, down, c.backward, c.left, c.right, c.jump, c.quit)
+      controlsWithKey(c, down, c.backward, c.left, c.right, c.use, c.cast, c.jump, c.quit)
     } else {
       if (scancode == scancodeS) {
-        controlsWithKey(c, c.forward, down, c.left, c.right, c.jump, c.quit)
+        controlsWithKey(c, c.forward, down, c.left, c.right, c.use, c.cast, c.jump, c.quit)
       } else {
         if (scancode == scancodeA) {
-          controlsWithKey(c, c.forward, c.backward, down, c.right, c.jump, c.quit)
+          controlsWithKey(c, c.forward, c.backward, down, c.right, c.use, c.cast, c.jump, c.quit)
         } else {
           if (scancode == scancodeD) {
-            controlsWithKey(c, c.forward, c.backward, c.left, down, c.jump, c.quit)
+            controlsWithKey(c, c.forward, c.backward, c.left, down, c.use, c.cast, c.jump, c.quit)
           } else {
-            if (scancode == scancodeSpace) {
-              controlsWithKey(c, c.forward, c.backward, c.left, c.right, down, c.quit)
+            if (scancode == scancodeE) {
+              controlsWithKey(c, c.forward, c.backward, c.left, c.right, down, c.cast, c.jump, c.quit)
             } else {
-              if (scancode == scancodeEscape) {
-                controlsWithKey(c, c.forward, c.backward, c.left, c.right, c.jump, down || c.quit)
+              if (scancode == scancodeSpace) {
+                controlsWithKey(c, c.forward, c.backward, c.left, c.right, c.use, down, down, c.quit)
               } else {
-                c
+                if (scancode == scancodeEscape) {
+                  controlsWithKey(c, c.forward, c.backward, c.left, c.right, c.use, c.cast, c.jump, down || c.quit)
+                } else {
+                  c
+                }
               }
             }
           }
@@ -152,7 +177,7 @@ let setKey = (game: Game, scancode: Number, down: Bool) => {
 
 let addMouse = (game: Game, dx: Number, dy: Number) => {
   let c = game.controls;
-  withControls(game, controlsWithMouse(c, c.mouseX + dx, c.mouseY + dy))
+  withControls(game, controlsWithTransient(c, c.mouseX + dx, c.mouseY + dy, c.use, c.cast))
 };
 
 let axis = (positive, negative) => {
@@ -165,6 +190,10 @@ let clamp = (value, low, high) => {
   if (value < low) { low } else { if (value > high) { high } else { value } }
 };
 
+let inRange = (value, low, high) => {
+  value >= low && value <= high
+};
+
 -- Movement. The pure core owns input timing, look, jump intent, and a ground
 -- estimate for vertical motion. Rapier owns horizontal wall/obstacle response
 -- in main.wm from the same level solids used for rendering.
@@ -173,6 +202,10 @@ let eyeHeight = 1.4;      -- camera height above the feet
 let stepHeight = 0.55;    -- tallest ledge that is climbed rather than blocked
 let gravity = 22;
 let jumpSpeed = 6;
+let pilotFeetX = 0;
+let pilotFeetY = 3.6;
+let pilotFeetZ = -7.4;
+let fishWait = 3.5;
 
 let withinFoot = (cc, hc, p) => { p > (cc - hc - playerRadius) && p < (cc + hc + playerRadius) };
 
@@ -191,44 +224,122 @@ let rec groundUnder = (boxes, px, pz, feetY, yOff, best) => {
   }
 };
 
+let isAtPilotSeat = (game: Game) => {
+  let m = game.mech;
+  let (lx, ly, lz) = toLocal(m.x, m.y, m.z, m.yaw, game.x, game.y, game.z);
+  inRange(lx, -1.6, 1.6) && inRange(ly, 3.1, 4.25) && inRange(lz, -8.9, -6.5)
+};
+
+let withPilot = (game: Game, piloting: Bool) => {
+  .{
+    x = game.x,
+    y = game.y,
+    z = game.z,
+    vy = game.vy,
+    yaw = game.yaw,
+    pitch = game.pitch,
+    frame = game.frame,
+    last = game.last,
+    controls = game.controls,
+    mech = game.mech,
+    fishing = game.fishing,
+    piloting
+  }
+};
+
+let hookWorld = (mech: Mech) => {
+  toWorld(mech.x, mech.y, mech.z, mech.yaw, 0, 1.25, -18.5)
+};
+
+let hookInPond = (mech: Mech) => {
+  let (hx, _hy, hz) = hookWorld(mech);
+  inRange(hx, 3.25, 12.75) && inRange(hz, 4.5, 11.5)
+};
+
+let stepFishing = (fishing: Fishing, controls: Controls, mech: Mech, piloting: Bool, dt: Number) => {
+  let started = piloting && controls.cast && !fishing.active;
+  let active = if (started) { true } else { fishing.active };
+  let timer = if (started) { 0 } else { if (active) { fishing.timer + dt } else { fishing.timer } };
+  let finished = active && timer >= fishWait;
+  let caught =
+    if (finished && hookInPond(mech)) {
+      fishing.caught + 1
+    } else {
+      fishing.caught
+    };
+
+  .{
+    active = if (finished) { false } else { active },
+    timer = if (finished) { 0 } else { timer },
+    caught
+  }
+};
+
 let stepGame = (game: Game, time: Number) => {
   let rawDt = if (game.last == 0) { 0 } else { (time - game.last) / 1000 };
   let dt = clamp(rawDt, 0, 0.05);
-  let yaw = game.yaw + game.controls.mouseX * 0.002;
-  let pitch = clamp(game.pitch - game.controls.mouseY * 0.002, -1.45, 1.45);
-  let forward = axis(game.controls.forward, game.controls.backward);
-  let strafe = axis(game.controls.right, game.controls.left);
+  let pilotNext =
+    if (game.controls.use) {
+      if (game.piloting) { false } else { isAtPilotSeat(game) }
+    } else {
+      game.piloting
+    };
+  let baseGame = withPilot(game, pilotNext);
+  let yaw = baseGame.yaw + baseGame.controls.mouseX * 0.002;
+  let pitch = clamp(baseGame.pitch - baseGame.controls.mouseY * 0.002, -1.45, 1.45);
+  let forward = axis(baseGame.controls.forward, baseGame.controls.backward);
+  let strafe = axis(baseGame.controls.right, baseGame.controls.left);
   let speed = 3.5;
-  let feetY = game.y;
-  let x = game.x + (sin(yaw) * forward + cos(yaw) * strafe) * speed * dt;
-  let z = game.z + ((0 - cos(yaw)) * forward + sin(yaw) * strafe) * speed * dt;
-  let m = game.mech;
+  let driveSpeed = 1.8;
+  let turnSpeed = 0.9;
+  let oldM = baseGame.mech;
+  let mechYaw = if (pilotNext) { oldM.yaw + strafe * turnSpeed * dt } else { oldM.yaw };
+  let mechX = if (pilotNext) { oldM.x + sin(mechYaw) * forward * driveSpeed * dt } else { oldM.x };
+  let mechZ = if (pilotNext) { oldM.z + (0 - cos(mechYaw)) * forward * driveSpeed * dt } else { oldM.z };
+  let m = .{ x = mechX, y = oldM.y, z = mechZ, yaw = mechYaw };
+  let fishing = stepFishing(baseGame.fishing, baseGame.controls, m, pilotNext, dt);
   let mechBoxes = mechSolids();
   let worldBoxes = worldSolids();
+  let (walkX, walkY, walkZ) =
+    if (pilotNext) {
+      toWorld(m.x, m.y, m.z, m.yaw, pilotFeetX, pilotFeetY, pilotFeetZ)
+    } else {
+      (baseGame.x + (sin(yaw) * forward + cos(yaw) * strafe) * speed * dt,
+       baseGame.y,
+       baseGame.z + ((0 - cos(yaw)) * forward + sin(yaw) * strafe) * speed * dt)
+    };
+  let feetY = walkY;
   -- Horizontal motion is now only intent. Rapier owns wall and obstacle
   -- response at the FFI boundary, while the pure core keeps timing, look, jump,
   -- and a ground estimate for vertical intent.
-  let (footLx, _footLy, footLz) = toLocal(m.x, m.y, m.z, m.yaw, x, 0, z);
-  let groundWorld = groundUnder(worldBoxes, x, z, feetY, 0, 0);
+  let (footLx, _footLy, footLz) = toLocal(m.x, m.y, m.z, m.yaw, walkX, 0, walkZ);
+  let groundWorld = groundUnder(worldBoxes, walkX, walkZ, feetY, 0, 0);
   let groundY = groundUnder(mechBoxes, footLx, footLz, feetY, m.y, groundWorld);
-  let grounded = game.y <= (groundY + 0.05);
-  let vyUp = if (game.controls.jump && grounded) { jumpSpeed } else { game.vy - gravity * dt };
-  let yTry = game.y + vyUp * dt;
+  let grounded = baseGame.y <= (groundY + 0.05);
+  let vyUp =
+    if (pilotNext) {
+      0
+    } else {
+      if (baseGame.controls.jump && grounded) { jumpSpeed } else { baseGame.vy - gravity * dt }
+    };
+  let yTry = if (pilotNext) { walkY } else { baseGame.y + vyUp * dt };
   let landed = yTry <= groundY;
-  let y = if (landed) { groundY } else { yTry };
-  let vy = if (landed) { 0 } else { vyUp };
+  let y = if (pilotNext) { walkY } else { if (landed) { groundY } else { yTry } };
+  let vy = if (pilotNext || landed) { 0 } else { vyUp };
 
   .{
-    x,
+    x = walkX,
     y,
-    z,
+    z = walkZ,
     vy,
-    yaw,
+    yaw = if (pilotNext) { mechYaw } else { yaw },
     pitch,
-    frame = game.frame + 1,
+    frame = baseGame.frame + 1,
     last = time,
-    controls = game.controls,
-    mech = game.mech
+    controls = baseGame.controls,
+    mech = m,
+    fishing,
+    piloting = pilotNext
   }
 };
 
@@ -240,6 +351,16 @@ let cameraY = (game: Game) => { game.y + eyeHeight };
 let cameraZ = (game: Game) => { game.z };
 let playerY = (game: Game) => { game.y };
 let shouldQuit = (game: Game) => { game.controls.quit };
+let mechX = (game: Game) => { game.mech.x };
+let mechY = (game: Game) => { game.mech.y };
+let mechZ = (game: Game) => { game.mech.z };
+let mechYaw = (game: Game) => { game.mech.yaw };
+let isPiloting = (game: Game) => { game.piloting };
+let isFishing = (game: Game) => { game.fishing.active };
+let fishCaught = (game: Game) => { game.fishing.caught };
+let hookX = (game: Game) => { let (x, _y, _z) = hookWorld(game.mech); x };
+let hookY = (game: Game) => { let (_x, y, _z) = hookWorld(game.mech); y };
+let hookZ = (game: Game) => { let (_x, _y, z) = hookWorld(game.mech); z };
 
 let placePlayer = (game: Game, x: Number, y: Number, z: Number) => {
   .{
@@ -252,6 +373,8 @@ let placePlayer = (game: Game, x: Number, y: Number, z: Number) => {
     frame = game.frame,
     last = game.last,
     controls = game.controls,
-    mech = game.mech
+    mech = game.mech,
+    fishing = game.fishing,
+    piloting = game.piloting
   }
 };

@@ -122,6 +122,24 @@ let upperCommand = () => {
   ])
 };
 
+let cockpitControls = () => {
+  group([
+    -- The first playable cockpit surface: a compact command cluster reachable
+    -- from the upper stand point, with physical levers and status blocks.
+    at(0, 4.8, -8.82, box(2.4, 0.18, 0.34, panel)),
+    at(0, 4.95, -8.92, box(1.55, 0.12, 0.18, accent)),
+    at(-0.95, 5.12, -8.8, box(0.14, 0.5, 0.14, strut)),
+    at(-0.95, 5.42, -8.8, box(0.34, 0.18, 0.34, accent)),
+    at(0.95, 5.05, -8.8, box(0.14, 0.36, 0.14, strut)),
+    at(0.95, 5.27, -8.8, box(0.3, 0.16, 0.3, accent)),
+    at(-0.45, 4.98, -8.55, box(0.26, 0.16, 0.22, accent)),
+    at(0, 4.98, -8.55, box(0.26, 0.16, 0.22, accent)),
+    at(0.45, 4.98, -8.55, box(0.26, 0.16, 0.22, accent)),
+    at(-1.45, 4.2, -7.25, box(0.55, 0.18, 0.85, strut)),
+    at(1.45, 4.2, -7.25, box(0.55, 0.18, 0.85, strut))
+  ])
+};
+
 let rails = () => {
   group([
     -- Low rails on exposed mezzanine edges; tall enough to read, low enough not
@@ -155,6 +173,16 @@ let exterior = () => {
   ])
 };
 
+let fishingRig = () => {
+  group([
+    -- Forward utility boom for the first mech-fishing interaction. It is
+    -- deliberately chunky and readable from the cockpit and the pond.
+    at(0, 5.7, -12.2, box(0.45, 0.45, 3.0, strut)),
+    at(0, 5.25, -14.0, box(0.28, 1.1, 0.28, strut)),
+    at(0, 4.6, -14.0, box(0.8, 0.18, 0.18, accent))
+  ])
+};
+
 let mech = () => {
   group([
     lowerShell(),
@@ -163,8 +191,10 @@ let mech = () => {
     shaftWalls(),
     reactorShaft(),
     upperCommand(),
+    cockpitControls(),
     rails(),
-    exterior()
+    exterior(),
+    fishingRig()
   ])
 };
 

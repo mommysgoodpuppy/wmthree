@@ -54,11 +54,17 @@ Controls:
 ```txt
 W / S       move forward / backward
 A / D       strafe left / right
+E           enter / exit the cockpit pilot seat when near the controls
+Space       jump on foot; cast the mech fishing rig while piloting
 Mouse       look
 Escape      exit
 ```
 
 SDL relative mouse mode is enabled after window creation.
+
+When seated in the cockpit, W / S drives the mech forward and backward, A / D turns it, and the
+camera rides with the pilot station. Space drops the forward fishing hook for a short cast; catches
+are counted when the hook lands in the pond.
 
 ### Fixed frame run
 

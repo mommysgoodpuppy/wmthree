@@ -56,7 +56,16 @@ from "./game.wm" import {
   shouldQuit,
   lookX,
   lookY,
-  lookZ
+  lookZ,
+  mechX,
+  mechY,
+  mechZ,
+  mechYaw,
+  isPiloting,
+  isFishing,
+  hookX,
+  hookY,
+  hookZ
 };
 from "./levels/mech.wm" import { solids as mechSolids };
 from "./levels/world.wm" import { solids as worldSolids, mechPose };
@@ -405,6 +414,22 @@ let moveCharacter = (
     })
 };
 
+let syncCharacter = (
+  world: World,
+  body: RigidBody,
+  x: Number,
+  y: Number,
+  z: Number
+) => {
+  body.setNextKinematicTranslation(JSON{
+    x: x,
+    y: y + 0.9,
+    z: z
+  })
+    :> Result.andThen((_) => { world.step() })
+    :> Result.map((_) => { (x, y + 0.9, z, false) })
+};
+
 -- Render one shadow-casting box mesh per solid into `parent` (a Group per level
 -- instance). The same level lists feed Rapier static colliders, except visual
 -- water surfaces are skipped by physics. `materials` is the palette and each
@@ -456,6 +481,30 @@ let rec addPhysicsSolids = (world, ox, oy, oz, boxes) => {
   }
 };
 
+let buildFishingHook = (parent, lineMat, bobberMat) => {
+  let place = lift Result (line, bobber) => {
+    Result|
+      line.position.set(0, 1.1, 0),
+      bobber.position.set(0, 0.08, 0),
+      assign(line, JSON{ castShadow: true, receiveShadow: true }),
+      assign(bobber, JSON{ castShadow: true, receiveShadow: true }),
+      parent.add(line),
+      parent.add(bobber)
+    | :> threeResult
+  };
+  let build = lift Result (lineGeo, bobberGeo) => {
+    Result|
+      Mesh.new(lineGeo, lineMat) :> threeResult,
+      Mesh.new(bobberGeo, bobberMat) :> threeResult
+    | :> place
+  };
+
+  Result|
+    BoxGeometry.new(0.04, 2.2, 0.04) :> threeResult,
+    BoxGeometry.new(0.35, 0.16, 0.35) :> threeResult
+  | :> build
+};
+
 let buildPhysics = () => {
   let assemble = lift Result (world) => {
     let (mpx, mpy, mpz, _mpyaw) = mechPose();
@@ -492,6 +541,7 @@ let buildScene = (surface) => {
     scene,
     camera,
     mechGroup,
+    hookGroup,
     worldGroup,
     floorGeo,
     floorMat,
@@ -511,13 +561,13 @@ let buildScene = (surface) => {
           antialias: false
         }) :> threeResult
       | :> Result.map((floor, renderer) => {
-        (scene, camera, mechGroup, worldGroup, floor, skyLight, keyLight, fillLight, renderer)
+        (scene, camera, mechGroup, hookGroup, worldGroup, floor, skyLight, keyLight, fillLight, renderer)
       })
     };
 
     expectSome("surface.getContext returned null", contextOpt) :> assemble
   };
-  let configure = lift Result (scene, camera, mechGroup, worldGroup, floor, skyLight, keyLight, fillLight, renderer) => {
+  let configure = lift Result (scene, camera, mechGroup, hookGroup, worldGroup, floor, skyLight, keyLight, fillLight, renderer) => {
     let setClear = lift Result (clear) => {
       renderer.setClearColor(clear, 1) :> threeResult
     };
@@ -532,6 +582,7 @@ let buildScene = (surface) => {
 
       Result|
         scene.add(mechGroup) :> threeResult,
+        scene.add(hookGroup) :> threeResult,
         scene.add(worldGroup) :> threeResult,
         scene.add(floor) :> threeResult,
         scene.add(skyLight) :> threeResult,
@@ -547,12 +598,14 @@ let buildScene = (surface) => {
         floor.rotation.set(0 - 1.57079632679, 0, 0) :> threeResult,
         mechGroup.position.set(mpx, mpy, mpz) :> threeResult,
         mechGroup.rotation.set(0, mpyaw, 0) :> threeResult,
+        hookGroup.position.set(0, 0 - 1000, 0) :> threeResult,
         addSolids(mechGroup, palette, mechSolids()),
         addSolids(worldGroup, palette, worldSolids()),
+        buildFishingHook(hookGroup, strutMat, accentMat),
         Color.new(6979481) :> threeResult :> setClear,
         assign(Global, animationContext()) :> threeResult,
         renderer.setSize(width, height, false) :> threeResult
-      | :> Result.map((_) => { (scene, camera, renderer) })
+      | :> Result.map((_) => { (scene, camera, mechGroup, hookGroup, renderer) })
     };
 
     Result|
@@ -566,15 +619,16 @@ let buildScene = (surface) => {
       makeMaterial(2858525, 0.8, 0) :> threeResult        -- foliage: reeds and bait beds
     | :> populate
   };
-  let initialize = lift Task (scene, camera, renderer) => {
+  let initialize = lift Task (scene, camera, mechGroup, hookGroup, renderer) => {
     renderer.init()
       :> Task.mapErr(ThreeError)
-      :> Task.map((_) => { (scene, camera, renderer) })
+      :> Task.map((_) => { (scene, camera, mechGroup, hookGroup, renderer) })
   };
 
   let resources = Result|
     Scene.new() :> threeResult,
     PerspectiveCamera.new(75, width / height, 0.1, 1000) :> threeResult,
+    Group.new() :> threeResult,
     Group.new() :> threeResult,
     Group.new() :> threeResult,
     PlaneGeometry.new(60, 60) :> threeResult,
@@ -657,6 +711,8 @@ let stepFrame = (
   eventView,
   scene,
   camera,
+  mechGroup,
+  hookGroup,
   renderer,
   physics,
   game
@@ -672,9 +728,18 @@ let stepFrame = (
       let dz = cameraZ(nextGame) - cameraZ(inputGame);
       let applyPhysics = lift Result (px, py, pz, _grounded) => {
         let physicsGame = placePlayer(nextGame, px, py - 0.9, pz);
+        let hookPlace =
+          if (isFishing(physicsGame)) {
+            hookGroup.position.set(hookX(physicsGame), hookY(physicsGame), hookZ(physicsGame))
+          } else {
+            hookGroup.position.set(0, 0 - 1000, 0)
+          };
         let finish = lift Result (_) => { Ok(FrameNext(physicsGame)) };
 
         Result|
+          mechGroup.position.set(mechX(physicsGame), mechY(physicsGame), mechZ(physicsGame)),
+          mechGroup.rotation.set(0, mechYaw(physicsGame), 0),
+          hookPlace,
           camera.position.set(cameraX(physicsGame), cameraY(physicsGame), cameraZ(physicsGame)),
           camera.lookAt(lookX(physicsGame), lookY(physicsGame), lookZ(physicsGame)),
           renderer.render(scene, camera),
@@ -682,7 +747,11 @@ let stepFrame = (
         | :> threeResult :> finish
       };
 
-      moveCharacter(world, controller, collider, body, dx, dy, dz)
+      (if (isPiloting(nextGame)) {
+          syncCharacter(world, body, cameraX(nextGame), playerY(nextGame), cameraZ(nextGame))
+        } else {
+          moveCharacter(world, controller, collider, body, dx, dy, dz)
+        })
         :> physicsResult
         :> applyPhysics
     }
@@ -701,6 +770,8 @@ let rec spinFrames = (
   eventView,
   scene,
   camera,
+  mechGroup,
+  hookGroup,
   renderer,
   physics,
   game,
@@ -709,10 +780,10 @@ let rec spinFrames = (
   match(limit) {
     Remaining(0) => { Ok(game) },
     _ => {
-      match(stepFrame(sdl, surface, eventPtr, eventView, scene, camera, renderer, physics, game)) {
+      match(stepFrame(sdl, surface, eventPtr, eventView, scene, camera, mechGroup, hookGroup, renderer, physics, game)) {
         Ok(FrameDone(done)) => { Ok(done) },
         Ok(FrameNext(next)) => {
-          spinFrames(sdl, surface, eventPtr, eventView, scene, camera, renderer, physics, next, nextFrameLimit(limit))
+          spinFrames(sdl, surface, eventPtr, eventView, scene, camera, mechGroup, hookGroup, renderer, physics, next, nextFrameLimit(limit))
         },
         Err(e) => { Err(e) }
       }
@@ -730,10 +801,10 @@ let runGame = () => {
   };
   let play = lift Task (native, handles, physics, limit) => {
     let (sdl, window, surface, eventPtr, eventView) = native;
-    let (scene, camera, renderer) = handles;
+    let (scene, camera, mechGroup, hookGroup, renderer) = handles;
     let game = initialGame();
 
-    spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, renderer, physics, game, limit)
+    spinFrames(sdl, surface, Some(eventPtr), eventView, scene, camera, mechGroup, hookGroup, renderer, physics, game, limit)
       :> Task.fromResult
   };
 
